@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>P.E.K.K.A - WebGL Murni</title>
+    <style>
+        html, body {
+            margin: 0;
+            height: 100%;
+            background: #2e2e30;
+            overflow: hidden;
+            font-family: sans-serif;
+        }
+        canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+            touch-action: none;
+        }
+        #ui {
+            position: fixed;
+            left: 10px;
+            top: 10px;
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        button {
+            background: #555a66;
+            color: #fff;
+            border: 0;
+            border-radius: 6px;
+            padding: 7px 12px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #6c7280;
+        }
+        #h {
+            position: fixed;
+            bottom: 8px;
+            left: 10px;
+            color: #aaa;
+            font-size: 12px;
+        }
+        #fade { position: fixed; inset: 0; pointer-events: none; opacity: 0; background: #000; }
+        #bar { position: fixed; left: 10px; right: 10px; bottom: 28px; display: flex; gap: 8px; align-items: center; color: #ddd; font-size: 13px; }
+        button.on { background: #7a4fd0; }
+        select { border-radius: 6px; padding: 5px; }
+    </style>
+</head>
+<body>
+    <canvas id="c"></canvas>
+    
+    <div id="ui">
+        <button onclick="play(0,12)" title="Jatuh dari atas, kecil menjadi normal, badan diam kaku seperti robot">S1 · Spawn</button>
+        <button onclick="play(12,25)" title="Melangkah masuk, kaki & lengan berayun, dada mengembang">S2 · Challengers</button>
+        <button onclick="play(25,40)" title="Maju setengah langkah, putar pedang, tanduk & mata membesar">S3 · Power Up</button>
+        <button onclick="play(40,52)" title="Tebasan diagonal kombo (Rodrigues)">S4 · Charge &amp; Strike</button>
+        <button onclick="play(52,62)" title="Menebas diagonal dari bawah ke atas">S5 · Blast</button>
+        <button onclick="play(62,72)" title="Terdorong mundur">S6 · Impact</button>
+        <button onclick="play(72,90)" title="Pose kemenangan, fade to black, judul">S7–S8 · Aftermath</button>
+        <button onclick="play(0,90)" style="background:#3d7a4f">▶ Putar Semua</button>
+        <button onclick="resetPose()" style="background:#8a4a4a">Reset / Kamera Bebas</button>
+    </div>
+    <div id="fade"></div>
+    <div id="bar"><button id="pp" onclick="if(!movie){movie=true}playing=!playing;if(playing&&TL>=endAt)TL=0;this.textContent=playing?'⏸':'▶'">▶</button>
+        <select onchange="spd=+this.value"><option value=".5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select>
+        <input id="tl" type="range" min="0" max="90" step=".05" value="0" oninput="TL=+this.value;movie=true" style="flex:1"><span id="lab"></span></div>
+    
+    <div id="h">Drag = putar kamera · Scroll = zoom · WebGL murni (tanpa Three.js)</div>
+    
+    <script>
+        // ==========================================
+        // PANDUAN MENGUBAH BENTUK & POSISI (FUNGSI MATRIKS):
+        // ------------------------------------------
+        // T(x, y, z)  : Translate (Menggeser posisi objek ke Kiri/Kanan, Atas/Bawah, Maju/Mundur)
+        // S(x, y, z)  : Scale (Mengubah ukuran/skala objek)
+        // RX(sudut)   : Rotate X (Memutar objek menunduk/mendongak)
+        // RY(sudut)   : Rotate Y (Memutar objek menengok kiri/kanan)
+        // RZ(sudut)   : Rotate Z (Memiringkan objek ke samping)
+        // d(Bentuk, Matriks, Warna) : Fungsi untuk menggambar (draw) objek ke layar
+        // ==========================================
+
+        const cv = document.getElementById('c'),
+              gl = cv.getContext('webgl2');
+
+        if (!gl) {
+            document.body.innerHTML = '<p style="color:#fff">WebGL2 tidak didukung browser ini.</p>';
+        }
+
+        const VS = `#version 300 es
+in vec3 aP;
+in vec3 aN;
+uniform mat4 uVP, uM;
+out vec3 vW, vN, vL;
+void main() {
+    vec4 w = uM * vec4(aP, 1.);
+    vW = w.xyz;
+    vL = aP;
+    vN = mat3(transpose(inverse(uM))) * aN;
+    gl_Position = uVP * w;
+}`;
+
+        const FS = `#version 300 es
+precision highp float;
+in vec3 vW, vN, vL;
+uniform vec3 uCol, uCam, uHi;
+uniform float uSp, uEm, uGl, uGr;
+out vec4 o;
+
+float h(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
+float vn(vec3 p) {
+    vec3 i = floor(p), f = fract(p);
+    f = f * f * (3. - 2. * f);
+    return mix(
+        mix(mix(h(i), h(i + vec3(1, 0, 0)), f.x), mix(h(i + vec3(0, 1, 0)), h(i + vec3(1, 1, 0)), f.x), f.y),
+        mix(mix(h(i + vec3(0, 0, 1)), h(i + vec3(1, 0, 1)), f.x), mix(h(i + vec3(0, 1, 1)), h(i + vec3(1, 1, 1)), f.x), f.y), 
+        f.z
+    );
+}
+
+void main() {
+    vec3 N = normalize(vN), V = normalize(uCam - vW);
+    if (dot(N, V) < 0.) N = -N;
+    float n = vn(vW * 8.) * .6 + vn(vW * 28.) * .4;
+    vec3 base = uCol;
+    if (uGr > 0.) base = mix(uCol, vec3(.66, .36, .95), pow(clamp((vL.y + 1.) * .5, 0., 1.), 1.6)); 
+    vec3 al = base * (.9 + .2 * n * (1. - .7 * uGl)); // Cahaya Utama (Kanan atas depan)
+    vec3 L1 = normalize(vec3(.5, .8, .8)), L2 = normalize(vec3(-.7, .3, -.5)); // // Cahaya Tambahan/Fill Light (Kiri bawah belakang)
+
+    //// 2. PENCAHAYAAN DIFUS (Diffuse) & AMBIEN (Ambient)
+    float d = max(dot(N, L1), 0.) + .35 * max(dot(N, L2), 0.);
+    float am = .22 + .12 * N.y;
+    vec3 R = reflect(-V, N);
+    vec3 env = mix(vec3(.015, .015, .025), vec3(.6, .65, .78), smoothstep(.25, 1., R.y * .5 + .5));
+    env += vec3(1.) * (pow(max(dot(R, L1), 0.), 50.) * 2.2 + pow(max(dot(R, L2), 0.), 30.) * .6);
+    float fr = .14 + .86 * pow(1. - max(dot(N, V), 0.), 4.);
+    vec3 hi = mix(vec3(1.), uHi, .7);
+    float s = pow(max(dot(N, normalize(L1 + V)), 0.), 110.) * uGl * 1.6 + pow(max(dot(N, normalize(L1 + V)), 0.), 30.) * uSp * .25;
+    vec3 c = al * (am + d) + hi * s + env * hi * fr * uGl * (.4 + .6 * uSp) + uCol * uEm;
+    o = vec4(sqrt(c), 1.);
+}`;
+
+        function sh(t, s) {
+            const x = gl.createShader(t);
+            gl.shaderSource(x, s);
+            gl.compileShader(x);
+            if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(x));
+            return x;
+        }
+
+        const pg = gl.createProgram();
+        gl.attachShader(pg, sh(gl.VERTEX_SHADER, VS));
+        gl.attachShader(pg, sh(gl.FRAGMENT_SHADER, FS));
+        gl.linkProgram(pg);
+        gl.useProgram(pg);
+
+        const U = n => gl.getUniformLocation(pg, n),
+              uVP = U('uVP'), uM = U('uM'), uCol = U('uCol'), uCam = U('uCam'), 
+              uSp = U('uSp'), uEm = U('uEm'), uGl = U('uGl'), uHi = U('uHi'), uGr = U('uGr');
+
+        const I4 = () => new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+        function mul(a, b) {
+            const o = new Float32Array(16);
+            for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+                let s = 0;
+                for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k];
+                o[c * 4 + r] = s;
+            }
+            return o;
+        }
+
+        const X = (...m) => m.reduce(mul);
+        const T = (x, y, z) => { const m = I4(); m[12] = x; m[13] = y; m[14] = z; return m; };
+        const S = (x, y, z) => { const m = I4(); m[0] = x; m[5] = y; m[10] = z; return m; };
+        const RX = a => { const m = I4(), c = Math.cos(a), s = Math.sin(a); m[5] = c; m[6] = s; m[9] = -s; m[10] = c; return m; };
+        const RZ = a => { const m = I4(), c = Math.cos(a), q = Math.sin(a); m[0] = c; m[1] = q; m[4] = -q; m[5] = c; return m; };
+        const RY = a => { const m = I4(), c = Math.cos(a), s = Math.sin(a); m[0] = c; m[2] = -s; m[8] = s; m[10] = c; return m; };
+        const nrm = v => { const l = Math.hypot(...v) || 1; return v.map(x => x / l); };
+        const crs = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+        
+        function align(d) {
+            const y = nrm(d), h = Math.abs(y[1]) < .99 ? [0, 1, 0] : [1, 0, 0], x = nrm(crs(h, y)), z = crs(x, y), m = I4();
+            m.set([...x, 0, ...y, 0, ...z, 0], 0);
+            return m;
+        }
+
+        function persp(f, a, n, r) {
+            const m = new Float32Array(16), k = 1 / Math.tan(f / 2);
+            m[0] = k / a; m[5] = k; m[10] = (r + n) / (n - r); m[11] = -1; m[14] = 2 * r * n / (n - r);
+            return m;
+        }
+
+        function mk(parts) {
+            const V = [], Ix = []; let b = 0;
+            for (const [nu, nv, f] of parts) {
+                for (let j = 0; j <= nv; j++) for (let i = 0; i <= nu; i++) {
+                    const u = i / nu, v = j / nv, p = f(u, v), e = 1e-3, vv = Math.min(Math.max(v, .004), .996);
+                    const a = f(u + e, vv), c = f(u - e, vv), d = f(u, vv + e), g = f(u, vv - e);
+                    const n = nrm(crs([a[0] - c[0], a[1] - c[1], a[2] - c[2]], [d[0] - g[0], d[1] - g[1], d[2] - g[2]]));
+                    V.push(...p, ...n);
+                }
+                for (let j = 0; j < nv; j++) for (let i = 0; i < nu; i++) {
+                    const k = b + j * (nu + 1) + i;
+                    Ix.push(k, k + 1, k + nu + 1, k + 1, k + nu + 2, k + nu + 1);
+                }
+                b += (nu + 1) * (nv + 1);
+            }
+            const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+            const vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(V), gl.STATIC_DRAW);
+            const ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(Ix), gl.STATIC_DRAW);
+            gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+            gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+            return { vao, n: Ix.length };
+        }
+
+        const TAU = Math.PI * 2, sg = (x, e) => Math.sign(x) * Math.abs(x) ** e;
+        const ellP = (t0 = 0, t1 = 1) => [40, 26, (u, v) => { const p = u * TAU, t = (t0 + (t1 - t0) * v) * Math.PI; return [Math.sin(t) * Math.cos(p), Math.cos(t), Math.sin(t) * Math.sin(p)]; }];
+        const boxP = e => [[72, 48, (u, v) => { const p = u * TAU, t = v * Math.PI; return [sg(Math.sin(t), e) * sg(Math.cos(p), e), sg(Math.cos(t), e), sg(Math.sin(t), e) * sg(Math.sin(p), e)]; }]];
+        const cylP = () => [[36, 2, (u, v) => [Math.cos(u * TAU), 2 * v - 1, Math.sin(u * TAU)]], [36, 2, (u, v) => [v * Math.cos(u * TAU), 1, v * Math.sin(u * TAU)]], [36, 2, (u, v) => [v * Math.cos(u * TAU), -1, v * Math.sin(u * TAU)]]];
+        const coneP = () => [[36, 6, (u, v) => [v * Math.cos(u * TAU), 1 - 2 * v, v * Math.sin(u * TAU)]], [36, 2, (u, v) => [v * Math.cos(u * TAU), -1, v * Math.sin(u * TAU)]]];
+        const parP = () => [[48, 16, (u, v) => [v * Math.cos(u * TAU), 1 - v * v, v * Math.sin(u * TAU)]]];
+
+        function tubeP(P, r0, n = 48, m = 18, pn0 = [0, 0, 1], rt = .8) {
+            const bz = (t, k) => { const s = 1 - t; return s * s * s * P[0][k] + 3 * s * s * t * P[1][k] + 3 * s * t * t * P[2][k] + t * t * t * P[3][k]; };
+            const db = (t, k) => { const s = 1 - t; return 3 * s * s * (P[1][k] - P[0][k]) + 6 * s * t * (P[2][k] - P[1][k]) + 3 * t * t * (P[3][k] - P[2][k]); };
+            const C = [], N = [], B = [], R = []; let pn = pn0;
+            for (let i = 0; i <= n; i++) {
+                const t = i / n, tg = nrm([0, 1, 2].map(k => db(t, k)));
+                const d = pn[0] * tg[0] + pn[1] * tg[1] + pn[2] * tg[2], nn = nrm(pn.map((x, k) => x - tg[k] * d));
+                pn = nn; C.push([0, 1, 2].map(k => bz(t, k))); N.push(nn); B.push(crs(tg, nn)); R.push(r0 * Math.pow(1 - t, rt) + .012);
+            }
+            return [[m, n, (u, v) => {
+                const s = Math.min(v, .9999) * n, i = Math.floor(s), w = s - i, L = (a, k) => a[i][k] * (1 - w) + a[i + 1][k] * w,
+                      r = R[i] * (1 - w) + R[i + 1] * w, c = Math.cos(u * TAU), s2 = Math.sin(u * TAU);
+                return [0, 1, 2].map(k => L(C, k) + r * (c * L(N, k) + s2 * L(B, k)));
+            }]];
+        }
+
+        const bladeP = () => {
+            const sl = .22, ring = u => { const p = u * TAU; return [sg(Math.cos(p), .25) * .13, sg(Math.sin(p), .25) * .32]; }, ze = y => 1 - sl * (.5 - .5 * y / .32);
+            return [[40, 12, (u, v) => { const [x, y] = ring(u); return [x, y, -1 + v * (ze(y) + 1)]; }], [40, 3, (u, v) => { const [x, y] = ring(u); return [x * v, y * v, ze(y * v)]; }], [40, 3, (u, v) => { const [x, y] = ring(u); return [x * v, y * v, -1]; }]];
+        };
+
+        // KUMPULAN BENTUK GEOMETRI DASAR (Dapat dipanggil di fungsi scene)
+        const M = {
+            tri: mk([[1, 1, (u, v) => [(2 * u - 1) * (1 - v), -v, 0]]]),
+            toe: mk(tubeP([[0, 0, 0], [0, 0, .5], [0, .3, .85], [0, .55, .45]], .27, 48, 18, [1, 0, 0], .8)), // Ujung Sepatu Melengkung (Bézier 3D)
+            blade: mk(bladeP()), // Bilah Pedang (Superellipse tersapu sumbu Z)
+            box: mk(boxP(.22)), // Box bersudut halus (Superellipsoid eksponen)
+            ell: mk([ellP()]), // Ellipsoid Penuh (Bola memanjang)
+            half: mk([ellP(0, .5)]), // Setengah Ellipsoid (Helm, Pauldron)
+            cyl: mk(cylP()), // Cylinder (Lengan, Betis, Gagang)
+            cone: mk(coneP()), // Cone/Kerucut (Betis lancip, Duri)
+            par: mk(parP()), // Elliptic Paraboloid (Kubah dada/perut)
+            sh: mk(tubeP([[0, 0, 0], [.45, .05, 0], [.75, .3, 0], [.9, 1.05, -.05]], .2)), // Duri Bahu Samping
+            horn: mk(tubeP([[.5, 3.9, 0], [1.3, 3.6, 0], [1.5, 4.3, -.05], [2.0, 4.95, -.2]], .2)) // Tanduk Kepala (Bézier 3D)
+        };
+
+        const ST = [.13, .14, .16], DK = [.05, .05, .065], PK = [.3, .06, .42], EY = [1, .3, .7], MT = [.5, .52, .56];
+        let VP, CAM;
+        let LIFT = 0, ROOT = I4(), PM = I4();
+
+        function d(m, mat, col, sp = .5, em = 0) {
+            mat = mul(PM, mat); if (LIFT) mat = mul(T(0, LIFT, 0), mat); mat = mul(ROOT, mat);
+            gl.uniformMatrix4fv(uM, false, mat); gl.uniform3fv(uCol, col); gl.uniform1f(uSp, sp); gl.uniform1f(uEm, em);
+            const pk = col === PK; gl.uniform1f(uGl, sp > 0 ? 1 : 0); gl.uniform3fv(uHi, pk ? [.85, .6, 1] : [.75, .8, .92]); gl.uniform1f(uGr, pk && m === M.cone ? 1 : 0);
+            gl.bindVertexArray(m.vao); gl.drawElements(gl.TRIANGLES, m.n, gl.UNSIGNED_INT, 0);
+        }
+
+        function spike(B, p, dir, r, l) {
+            const n = nrm(dir), c = [p[0] + n[0] * l / 2, p[1] + n[1] * l / 2, p[2] + n[2] * l / 2];
+            d(M.cone, X(B, T(...c), align(n), S(r, l / 2, r)), PK, .7, .18);
+        }
+
+        function hand(B, s, curl) {
+            const y0 = -1.2, R = RZ(-s * curl * .5); 
+            d(M.box, X(B, T(-s * .02, y0 - .08, 0), S(.3, .26, .5)), ST, .6); // Punggung tangan
+            for (let k = 0; k < 4; k++) {
+                const z = (k - 1.5) * .25, L = (k == 1 || k == 2) ? 1 : .9, b = X(B, T(-s * .12, y0 - .34, z));
+                d(M.box, X(b, T(0, -.14 * L, 0), S(.12, .14 * L, .115)), ST, .6); // Ruas jari 1
+                const c = X(b, T(0, -.28 * L, 0), R, T(0, -.14 * L, 0));
+                d(M.box, X(c, S(.12, .14 * L, .115)), ST, .6); // Ruas jari 2
+                const e = X(c, T(0, -.14 * L, 0), R, T(0, -.13 * L, 0));
+                d(M.box, X(e, S(.115, .13 * L, .11)), DK, .6); // Ujung jari
+            }
+            d(M.cyl, X(B, T(-s * .12, y0 - .2, .38), RX(-.6), S(.1, .2, .1)), ST, .6); // Jempol
+        }
+
+        function scene(t) {
+            LIFT = 0;
+
+            // Dasar bayangan lantai
+            d(M.ell, X(T(0, .01, 0), S(2.4, .01, 1.7)), [.06, .06, .08], 0);
+
+            // ==========================================
+            // 1. BAGIAN KAKI (Kiri & Kanan)
+            // ==========================================
+            for (const s of [-1, 1]) { // Looping untuk kaki Kiri (-1) dan Kanan (1)
+                const PN = [.09, .09, .11]; PM = POSE.on ? legM(s) : I4();
+
+                // Paha (M.ell - Ellipsoid) -> Ubah S() untuk ketebalan paha, T() untuk posisi sambungan ke pinggul
+                d(M.ell, X(T(s * .62, 1.5, 0), S(.55, .58, .55)), PN, .15); 
+                
+                // Betis meruncing (M.cone - Cone terbalik) -> RZ(Math.PI) membalikkan cone
+                d(M.cone, X(T(s * .6, .55, 0), RZ(Math.PI), S(.55, .75, .55)), PN, .15); 
+                
+                // Sepatu: Kerah mata kaki (M.cyl)
+                d(M.cyl, X(T(s * .6, .3, -.02), S(.26, .13, .26)), DK, .4); 
+                
+                // Sepatu: Bibir Kerah (M.cyl)
+                d(M.cyl, X(T(s * .6, .42, -.02), S(.28, .04, .28)), ST, .6); 
+                
+                // Sepatu: Tumit belakang (M.ell)
+                d(M.ell, X(T(s * .6, .3, -.17), S(.29, .25, .25)), DK, .4); 
+                
+                // Sepatu: Badan punggung kaki (M.ell)
+                d(M.ell, X(T(s * .6, .2, .22), S(.31, .2, .44)), DK, .4); 
+                
+                // Sepatu: Ujung telapak melengkung ke atas (M.toe - Bézier 3D) -> Ubah S() jika ingin memanjangkan telapak
+                d(M.toe, X(T(s * .6, .18, .42), S(.55, .55, .55)), DK, .4); 
+            }
+
+            PM = I4(); LIFT = .5; // Mengangkat semua struktur badan ke atas pinggul
+
+            // ==========================================
+            // 2. BAGIAN BADAN & ZIRAH DADA
+            // ==========================================
+            // Zirah Rok (Sabuk Pelindung Paha Bawah)
+            d(M.box, X(T(0, 1.55, 0), S(1.25, .2, .8)), DK);
+            for (let tr = 0; tr < 2; tr++) { // Zirah rok berlapis
+                for (let k = 0; k < 12; k++) {
+                    const th = (k + tr * .5) / 12 * TAU, 
+                          p = [(1.2 + tr * .08) * Math.sin(th), 1.5 - tr * .3, (.82 + tr * .06) * Math.cos(th)];
+                    d(M.box, X(T(...p), RY(th), RX(-.18), S(.3, .26, .05)), tr ? ST : DK, .6); 
+                }
+            }
+
+            // Pinggul (Core Bawah)
+            d(M.box, X(T(0, 1.3, .95), RX(-.12), S(.46, .4, .06)), ST, .7); 
+            d(M.ell, X(T(0, 1.4, 1.02), S(.12, .12, .04)), MT, .9); 
+
+            // Perut (Core Tengah)
+            d(M.box, X(T(0, 2.05, 0), S(1.1, .4, .78)), ST); 
+            
+            // Pelindung Perut Cembung (M.par - Elliptic Paraboloid) -> Ubah S(.45) untuk menebalkan/mengempeskan perut
+            d(M.par, X(T(0, 1.95, .55), RX(Math.PI / 2), S(1.1, .45, .46)), ST, .7); 
+            
+            // Tepi bawah pelindung perut melebar
+            d(M.box, X(T(0, 1.55, .66), RX(-.22), S(.98, .13, .3)), DK, .7); 
+            d(M.box, X(T(0, 2.0, .9), S(.99, .06, .12)), DK, .7); // tali melintang
+
+            for (const s of [-1, 1]) {
+                d(M.box, X(T(s * 1.02, 2.0, .45), S(.1, .45, .32)), DK, .7); // tali pengikat samping
+                d(M.ell, X(T(s * .95, 2.2, .78), S(.09, .09, .05)), MT, .9); // paku keling samping
+            }
+
+            // Dada Atas (Core Atas)
+            d(M.box, X(T(0, 2.82, 0), S(1.15, .46, .8)), ST);
+            
+            // Zirah Dada Paraboloid (M.par) -> Ubah S() untuk membuat bidang dada lebih bidang/lebar
+            PM = POSE.on ? scAbout(0, 2.68, .4, POSE.breath) : I4(); // dada mengembang-mengempis (Scaling)
+            d(M.par, X(T(0, 2.68, .62), RX(Math.PI / 2), S(1.08, .55, .5)), ST, .7); 
+            
+            // Paku keling di dada atas
+            for (const x of [-.55, .55]) d(M.ell, X(T(x, 2.8, .96), S(.09, .09, .05)), MT, .9);
+            PM = I4();
+            
+            // Punggung belakang (M.box)
+            d(M.box, X(T(0, 2.8, -.8), S(1.05, .7, .14)), ST); 
+
+            // ==========================================
+            // 3. BAGIAN KEPALA, HELM, DAN MATA
+            // ==========================================
+            // Dasar Kotak Kepala (M.box)
+            d(M.box, X(T(0, 3.72, 0), S(.58, .45, .54)), ST);
+            
+            // Kubah Helm Atas (M.half - Setengah Ellipsoid)
+            d(M.half, X(T(0, 3.9, 0), S(.66, .52, .63)), ST, .7);
+            
+            // Garis pembatas celah tengah dahi
+            d(M.box, X(T(0, 3.5, .548), S(.08, .22, .008)), ST, .9); 
+            d(M.cone, X(T(0, 3.78, .548), S(.08, .1, .008)), ST, .9);
+            
+            // 1. Celah Hitam Vertikal (Bagian Bawah/Mulut) -> Menggunakan M.box
+            d(M.box, X(T(0, 3.5, .552), S(.05, .2, .012)), [.02, .02, .04], 0);
+
+            // 2. Ujung Lancip Atas (Di Antara Mata) -> Menggunakan M.cone
+            d(M.cone, X(T(0, 3.77, .552), S(.05, .07, .012)), [.02, .02, .04], 0);
+
+            // Area Celah Mata Kiri Kanan
+            for (const s of [-1, 1]) {
+                const E = X(T(s * .3, 3.8, 0), RZ(s * .35)); // RZ memiringkan celah mata
+                
+                // Segitiga outline armor (M.tri)
+                d(M.tri, X(E, T(0, .03, .548), S(.25, .25, 1)), ST, .9); 
+                
+                // Segitiga lubang gelap (M.tri)
+                d(M.tri, X(E, T(0, 0, .553), S(.2, .2, 1)), [.02, .02, .04], 0); 
+                
+                // *** MATA INTERNAL MENYALA (M.ell pipih) ***
+                // -> Ubah parameter warna [1, .35, .85] menjadi merah misalnya [1, 0, 0]
+                // -> S(.11, .045, .02) mengatur besar kecilnya mata menyala
+                d(M.ell, X(E, T(0, -.065, .572), S(.11 * (1 + (POSE.glow - 1) * .6), .045 * (1 + (POSE.glow - 1) * .6), .02)), [1, .35, .85], 0, 1.6 * POSE.glow); 
+                
+                // Alis pelat di atas mata
+                d(M.box, X(E, T(0, .035, .57), S(.26, .025, .035)), ST, .9); 
+                
+                // Engsel / penutup telinga samping
+                d(M.ell, X(T(s * .62, 3.9, 0), S(.18, .27, .27)), DK);
+            }
+
+            // Punuk Pelindung Leher Belakang
+            d(M.box, X(T(0, 3.35, .2), S(.45, .14, .3)), DK);
+            d(M.half, X(T(0, 3.2, -.45), S(.8, .5, .5)), ST, .7); 
+            d(M.box, X(T(0, 3.08, -.5), S(.86, .12, .42)), DK, .7);
+            d(M.box, X(T(0, 3.45, -.78), S(.5, .04, .12)), DK, .7);
+            
+            // ==========================================
+            // 4. BAGIAN TANDUK KEPALA
+            // ==========================================
+            // M.horn adalah kurva Bezier 3D. 
+            // Posisi dan skalanya relatif terhadap root I4() (tengah).
+            PM = POSE.on ? scAbout(0, 3.9, 0, 1 + (POSE.glow - 1) * .3) : I4(); // tanduk membesar (Scaling)
+            d(M.horn, I4(), PK, .8, .15); // Tanduk Kanan
+            d(M.horn, S(-1, 1, 1), PK, .8, .15); // Tanduk Kiri (Di-flip dengan S(-1,1,1))
+            PM = I4();
+
+            const a = anim ? Math.sin(t * 2) * .2 : 0; // Animasi ayunan default (idle)
+
+            // ==========================================
+            // 5. PELINDUNG BAHU, LENGAN, TANGAN & PEDANG
+            // ==========================================
+            for (const s of [-1, 1]) { // Kiri & Kanan
+                const sc = [s * 1.65, 3.1, 0]; // Koordinat pusat bahu
+                
+                // Engsel Bahu (M.ell - menutupi rongga ketiak/bahu)
+                d(M.ell, X(T(s * 1.62, 2.9, 0), S(.45, .45, .45)), DK);
+                
+                // Pauldron (Pelindung Bahu Atas - Setengah Ellipsoid)
+                d(M.half, X(T(...sc), S(.82, .58, .76)), ST, .7);
+                
+                // Bibir bawah Pauldron (Cylinder)
+                d(M.cyl, X(T(...sc), S(.83, .05, .77)), DK, .6); 
+                
+                // Tutup rongga bawah Pauldron
+                d(M.half, X(T(...sc), S(.82, -.28, .76)), DK, .5); 
+                
+                // Plat pelapis bahu tambahan
+                d(M.box, X(T(sc[0], sc[1] - .3, sc[2]), S(.74, .1, .68)), ST, .7); 
+                
+                // Duri Tanduk samping bahu (M.sh - Tube Bezier)
+                d(M.sh, X(T(sc[0] + s * .45, sc[1] + .1, sc[2]), S(s, 1, 1)), PK, .8, .15); 
+                
+                // Duri-duri kecil (Spike - Cone) di bagian atas dan belakang bahu
+                spike(I4(), [sc[0] + s * .05, sc[1] + .56, sc[2]], [0, 1, 0], .1, .4); 
+                spike(I4(), [sc[0], sc[1] + .2, sc[2] - .7], [0, .2, -1], .1, .4); 
+
+                // Matriks sendi putar lengan dari pangkal bahu (Lengan atas)
+                const A = X(T(s * 1.62, 2.9, 0), POSE.on ? (s < 0 ? POSE.armL : POSE.armR) : RX(s > 0 ? a : -a)); // RX berayun otomatis
+                d(M.ell, X(A, T(0, -.62, 0), S(.5, .5, .5)), DK); // Lengan atas (ellipsoid)
+
+                // Matriks engsel Siku (Lengan bawah)
+                const B = X(A, T(0, -.62, 0), RX((s < 0 ? -.25 : -.5) - (POSE.on ? (s < 0 ? POSE.elbL : POSE.elbR) : 0))); // Siku ditekuk sedikit (RX)
+
+                // Lengan Bawah (Susunan Box)
+                d(M.box, X(B, T(0, -.62, 0), S(.46, .6, .46)), DK); // Inti lengan bawah
+                d(M.box, X(B, T(0, -.3, 0), S(.52, .26, .52)), ST, .7); // Pelat luar 1
+                d(M.box, X(B, T(0, -.82, 0), S(.5, .22, .5)), ST, .7); // Pelat luar 2
+                
+                // Pita pengikat lengan bawah
+                for (const y of [-.55, -1.05]) d(M.box, X(B, T(0, y, 0), S(.54, .07, .54)), DK, .7); 
+                
+                // Kotak perisai kecil di punggung lengan
+                d(M.box, X(B, T(s * .5, -.6, 0), S(.07, .5, .42)), DK); 
+                
+                // 4 Duri formasi kotak di lengan bawah
+                for (const y of [-.35, -.85]) {
+                    for (const z of [-.2, .2]) {
+                        spike(B, [s * .55, y, z], [s, 0, 0], .09, .45); 
+                    }
+                }
+
+                // Pergelangan Tangan
+                // Tangan kiri pemegang pedang ditekuk (RX, RY) agar pedang menghadap depan
+                const Bh = s < 0 ? X(B, T(0, -1.2, 0), RY(POSE.on ? POSE.wrist : 0), RX(.6), T(0, 1.2, 0)) : B; 
+                
+                // Gambar Tangan (Jari ditekuk)
+                hand(Bh, s, s < 0 ? 1.4 : .5);
+
+                // *** PEDANG (Hanya di Tangan kiri: s < 0) ***
+                if (s < 0) {
+                    const F = X(Bh, T(-s * .36, -1.78, 0)); // Posisi pusat pegangan gagang
+                    
+                    // Gagang Pedang (M.cyl - Cylinder)
+                    d(M.cyl, X(F, RX(Math.PI / 2), S(.09, .55, .09)), DK);
+                    
+                    // Bonggol bawah pedang (M.ell)
+                    d(M.ell, X(F, T(0, 0, -.6), S(.13, .13, .13)), MT, .9);
+                    
+                    // Crossguard (Penahan Bilah) (M.box)
+                    d(M.box, X(F, T(0, 0, .56), S(.42, .1, .1)), DK);
+                    
+                    // Bilah Pedang Tebal (M.blade - Superellipse disapu Z)
+                    // -> Ubah S(1, 1, 1.5) untuk mengubah lebar bilah (X), ketebalan (Y), atau panjang pedang (Z)
+                    d(M.blade, X(F, T(0, 0, .55 + 1.5), S(1, 1, 1.5)), MT, 1);
+                }
+            }
+        }
+
+        // =====================================================================
+        // ANIMASI P.E.K.K.A (Valent) — Scene 2 s/d 8 (timeline storyline 90 detik)
+        // Semua pakai matriks buatan sendiri: Translate, Rotate, Scale, Rodrigues, Hierarchical.
+        // Model (fungsi scene) TIDAK diubah bentuknya; animasi hanya menyisipkan matriks POSE.
+        // =====================================================================
+        const POSE = { on: false, armL: I4(), armR: I4(), elbL: 0, elbR: 0, wrist: 0, breath: 1, glow: 1, leg: [0, 0] };
+        const cl = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x)), sg2 = (t, a, b) => cl((t - a) / (b - a)), ez = x => x * x * (3 - 2 * x), lp = (a, b, k) => a + (b - a) * k;
+
+        // ROTATE ARBITRARY AXIS (rumus Rodrigues): putar sebesar ang mengelilingi sumbu sembarang ax
+        function rod(ax, ang) {
+            const [x, y, z] = nrm(ax), c = Math.cos(ang), s = Math.sin(ang), k = 1 - c, m = I4();
+            m[0] = c + x * x * k;     m[1] = y * x * k + z * s; m[2] = z * x * k - y * s;
+            m[4] = x * y * k - z * s; m[5] = c + y * y * k;     m[6] = z * y * k + x * s;
+            m[8] = x * z * k + y * s; m[9] = y * z * k - x * s; m[10] = c + z * z * k;
+            return m;
+        }
+        // SCALING terhadap titik pusat (cx,cy,cz): T(c) * S * T(-c)
+        const scAbout = (cx, cy, cz, k) => X(T(cx, cy, cz), S(k, k, k), T(-cx, -cy, -cz));
+        // HIERARCHICAL kaki: seluruh paha-betis-sepatu berayun dari titik pinggul
+        const legM = s => { const p = [s * .62, 1.95, 0]; return X(T(...p), RX(POSE.leg[s < 0 ? 0 : 1]), T(-p[0], -p[1], -p[2])); };
+
+        let TL = 0, endAt = 90, playing = false, spd = 1, movie = false, last = 0;
+        const AX1 = [Math.cos(.6), 0, Math.sin(.6)], AX2 = [Math.cos(.6), 0, -Math.sin(.6)]; // dua sumbu diagonal tebasan
+
+        function updatePose(t) {
+            const w = (a, b) => ez(sg2(t, a, b));
+            let x = -7.5, z = 1.5, yaw = 1.45, dy = 0, sk = 1, sq = 0, lean = 0, amp = 0, ph = 0, lunge = 0, aL = null, aR = null, eL = 0, wr = 0, gl = 1;
+            if (t < 12) {                                        // S1: SPAWN — jatuh dari atas, kecil -> normal, lalu diam kaku seperti robot
+                const f = sg2(t, .3, 3.8), b = sg2(t, 3.8, 4.7);
+                dy = 9 * (1 - Math.pow(f, 1.5));                           // Translate: jatuh makin cepat (gravitasi)
+                sk = lp(.15, 1, ez(f));                          // Scaling: dari kecil ke ukuran normal
+                sq = Math.sin(b * Math.PI) * (1 - b);            // Scaling: penyok singkat saat mendarat
+                gl = 1 + .8 * (t > 3.8 ? Math.exp(-(t - 3.8) * 2.2) : 0);   // mata berkedip menyala saat mendarat
+            }
+            else if (t < 25) {                                   // S2: melangkah masuk dari kiri depan, lalu berhenti & dada bernapas
+                const k = w(12, 25); x = lp(-7.5, -3.2, k); z = lp(1.5, .6, k); yaw = lp(1.45, .9, w(21, 25));
+                amp = .55 * w(12, 13.5) * (1 - w(23, 25)); ph = x * 2.6;
+            }
+            else if (t < 40) {                                   // S3: maju setengah langkah, putar pergelangan/pedang, tanduk & mata membesar
+                const k = w(25, 31); x = lp(-3.2, -2.2, k); z = lp(.6, .3, k); yaw = .9;
+                amp = .4 * (1 - w(29.5, 31)); ph = x * 2.6;
+                const p = w(31, 36), q = sg2(t, 33, 38);
+                aL = rod([1, 0, -.3], -.6 * p); eL = .9 * p; wr = Math.sin(q * Math.PI * 4) * .6 * Math.sin(q * Math.PI);
+                gl = 1 + .5 * w(26, 40);
+            }
+            else if (t < 52) {                                   // S4: tebasan diagonal kombo (Rodrigues): angkat -> tebas -> tarik
+                x = -2.2; z = .3; yaw = .9; gl = 1.5;
+                const up = w(40, 43), dn = w(43, 45.5), rc = w(46, 52);
+                let a = lp(-.6, -2.9, up), e = lp(.9, .5, up);
+                a = lp(a, -.2, dn); e = lp(e, .1, dn); a = lp(a, -.6, rc); e = lp(e, .9, rc);
+                aL = rod(AX1, a); eL = e; lunge = Math.sin(dn * Math.PI); x += .6 * lunge; yaw += .3 * lunge;
+            }
+            else if (t < 62) {                                   // S5: menebas diagonal dari bawah ke atas
+                x = -2.2; z = .3; yaw = .9;
+                const wu = w(52, 55), sl = w(55, 58), hd = w(58, 62);
+                const axv = [AX1[0], 0, lp(AX1[2], AX2[2], wu)];
+                let a = lp(-.6, .7, wu), e = lp(.9, .2, wu); a = lp(a, -2.6, sl); e = lp(e, .6, sl); a = lp(a, -1.8, hd);
+                aL = rod(axv, a); eL = e; lunge = Math.sin(sl * Math.PI); x += .4 * lunge; gl = 1.5;
+            }
+            else if (t < 72) {                                   // S6: terdorong mundur gelombang kejut (Translate + Rotate)
+                const k = w(62, 64.5), r = w(64.5, 71);
+                x = -2.2 - 1.1 * k + .4 * r; z = .3; yaw = .9; lean = .28 * k * (1 - r) + .04; lunge = .8 * k * (1 - r);
+                aL = rod(AX2, lp(lp(-1.8, -1.2, k), -.5, r)); eL = lp(lp(.6, .7, k), .9, r);
+                aR = rod([1, 0, 0], -.7 * k * (1 - r)); gl = lp(1.5, 1, r);
+            }
+            else {                                               // S7-S8: pose kemenangan, pedang tegak di samping bahu
+                const v = w(72, 76); x = lp(-2.9, -2.5, v); z = .3; yaw = lp(.9, .6, v); lean = .04 * (1 - v);
+                aL = X(rod([0, 0, 1], -.5 * v), rod(AX2, lp(-.5, -.3, v))); eL = lp(.9, 1.92, v);
+            }
+            const sn = Math.sin(ph), bob = amp > .01 ? Math.abs(sn) * .08 * (amp / .55) : 0;
+            if (!aL) aL = RX(-amp * sn * .4);
+            if (!aR) aR = RX(amp * sn * .6);
+            POSE.on = true; POSE.armL = aL; POSE.armR = aR; POSE.elbL = eL; POSE.elbR = .15 * amp; POSE.wrist = wr;
+            POSE.breath = 1 + .05 * Math.sin(t * 3.2) * w(22, 25) * (t < 40 ? 1 : .6); POSE.glow = gl * (1 + .03 * Math.sin(t * 7));
+            POSE.leg = [amp * sn - .4 * lunge, -amp * sn + .3 * lunge];
+            ROOT = X(T(x, bob + dy, z), RY(yaw), RX(-lean), S(1 + .08 * sq, 1 - .15 * sq, 1 + .08 * sq), scAbout(0, 2.5, 0, sk));
+        }
+        const SCN = [[0, 12, 'S1'], [12, 25, 'S2'], [25, 40, 'S3'], [40, 52, 'S4'], [52, 62, 'S5'], [62, 72, 'S6'], [72, 90, 'S7–S8']];
+        const NAMA = { S1: 'Spawn', S2: 'Challengers', S3: 'Power Up', S4: 'Charge & Strike', S5: 'Blast', S6: 'Impact', 'S7–S8': 'Aftermath & Outro' };
+        function play(a, b) { D = Math.max(D, 17); TL = a; endAt = b; movie = true; playing = true; document.getElementById('pp').textContent = '⏸'; }
+        function resetPose() { movie = false; playing = false; document.getElementById('pp').textContent = '▶'; }
+        function ui(t) {
+            const fd = document.getElementById('fade').style;
+            fd.opacity = ez(sg2(t, 82, 85));
+            document.getElementById('tl').value = t;
+            let n = ''; for (const [a, b, k] of SCN) if (t >= a && t < b) n = k + ' · ' + NAMA[k];
+            document.getElementById('lab').textContent = t.toFixed(1) + ' s  ' + n;
+        }
+
+        // ---------- kontrol UI & Mouse ----------
+        let Y = 0, P = .12, D = 13.5, anim = true, spin = false, drag = false, lx = 0, ly = 0;
+
+        cv.onpointerdown = e => { drag = true; lx = e.clientX; ly = e.clientY; cv.setPointerCapture(e.pointerId); };
+        cv.onpointerup = () => drag = false;
+        cv.onpointermove = e => { 
+            if (!drag) return; 
+            Y -= (e.clientX - lx) * .01; 
+            P = Math.min(1.3, Math.max(-.3, P + (e.clientY - ly) * .01)); 
+            lx = e.clientX; ly = e.clientY; 
+        };
+        cv.onwheel = e => { e.preventDefault(); D = Math.min(25, Math.max(5, D + e.deltaY * .01)); };
+
+        function frame(ms) {
+            const t = ms / 1000, dp = devicePixelRatio || 1, w = cv.clientWidth * dp | 0, h = cv.clientHeight * dp | 0;
+            if (cv.width != w || cv.height != h) { cv.width = w; cv.height = h; }
+            gl.viewport(0, 0, w, h); gl.clearColor(.18, .18, .2, 1); 
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); gl.enable(gl.DEPTH_TEST);
+            
+            if (spin) Y += .008;
+
+            const tg = [0, 2.65, 0], V = X(T(0, 0, -D), RX(P), RY(Y), T(0, -2.65, 0));
+            CAM = [tg[0] - D * Math.sin(Y) * Math.cos(P), tg[1] + D * Math.sin(P), tg[2] + D * Math.cos(Y) * Math.cos(P)];
+            
+            gl.uniformMatrix4fv(uVP, false, mul(persp(.8, w / h, .1, 100), V)); gl.uniform3fv(uCam, CAM);
+            
+            const dt = Math.min(.1, t - last); last = t;
+            if (movie) {
+                if (playing) { TL += dt * spd; if (TL >= endAt) { TL = endAt - .001; playing = false; document.getElementById('pp').textContent = '▶'; } }
+                updatePose(TL); ui(TL);
+            } else { POSE.on = false; POSE.glow = 1; ROOT = I4(); PM = I4(); document.getElementById('fade').style.opacity = 0; }
+            scene(t);
+            requestAnimationFrame(frame);
+        }
+        requestAnimationFrame(frame);   
+    </script>
+</body>
+</html>

@@ -1,0 +1,1349 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+</head>
+<body>
+<title>Procedural Arena</title>
+<style>
+/* Royal Arena - page chrome. The 3D scene is the design, so this stays a single dark look. */
+:root {
+  color-scheme: dark;
+  --sky: #1b3a6b;
+  --ink: #fff;
+  --glass: rgba(18, 28, 60, .55);
+  --line: rgba(255, 255, 255, .22);
+  --gold: #ffd54a;
+  --gold-ink: #3a2a00;
+}
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--sky);
+  color: var(--ink);
+  font-family: ui-rounded, "Segoe UI", system-ui, sans-serif;
+}
+
+canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+  cursor: grab;
+}
+canvas:active { cursor: grabbing; }
+
+/* ---- top bar ---- */
+#hud {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  top: 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  pointer-events: none;
+}
+h1 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: .5px;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, .45), 0 0 14px rgba(0, 0, 0, .35);
+}
+h1 small {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .3px;
+  opacity: .85;
+}
+#fps {
+  font-size: 12px;
+  text-align: right;
+  opacity: .8;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .6);
+}
+
+/* ---- view buttons ---- */
+#bar {
+  position: fixed;
+  left: 50%;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  max-width: calc(100vw - 32px);
+  padding: 6px;
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+button {
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+}
+button:hover { background: rgba(255, 255, 255, .14); }
+button.on { background: var(--gold); color: var(--gold-ink); }
+button:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
+
+/* ---- loading screen ---- */
+#load {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: linear-gradient(#2a5fb0, #16336b);
+  transition: opacity .5s;
+}
+#load .bar {
+  width: 220px;
+  height: 10px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, .35);
+  border-radius: 6px;
+}
+#load .bar i {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--gold);
+  transition: width .2s;
+}
+
+@media (max-width: 520px) {
+  h1 { font-size: 18px; }
+  h1 small { display: none; }
+  #hud { top: calc(10px + env(safe-area-inset-top, 0px)); }
+}
+</style>
+<canvas id="canvas"></canvas>
+
+  <div id="hud">
+    <h1>Procedural Arena<small>WebGL2 · drag to orbit · scroll to zoom · right-drag to pan</small></h1>
+    <div id="fps"></div>
+  </div>
+
+  <div id="bar">
+    <button data-view="battle">Battle view</button>
+    <button data-view="iso" class="on">Isometric</button>
+    <button data-view="top">Top down</button>
+    <button data-view="low">Ground level</button>
+    <button id="btn-spin">Auto-rotate</button>
+  </div>
+<script>
+/* ---- src/math.js ---- */
+/* Minimal 4x4 matrix helpers.
+   Matrices are column-major Float32Array(16), the layout WebGL expects. */
+const Mat4 = {
+  perspective(fovY, aspect, near, far) {
+    const f = 1 / Math.tan(fovY / 2);
+    const nf = 1 / (near - far);
+    return new Float32Array([
+      f / aspect, 0, 0, 0,
+      0, f, 0, 0,
+      0, 0, (far + near) * nf, -1,
+      0, 0, 2 * far * near * nf, 0,
+    ]);
+  },
+
+  ortho(left, right, bottom, top, near, far) {
+    return new Float32Array([
+      2 / (right - left), 0, 0, 0,
+      0, 2 / (top - bottom), 0, 0,
+      0, 0, -2 / (far - near), 0,
+      -(right + left) / (right - left), -(top + bottom) / (top - bottom), -(far + near) / (far - near), 1,
+    ]);
+  },
+
+  lookAt(eye, target, up) {
+    // z axis points from target to eye; x = up × z; y = z × x
+    let zx = eye[0] - target[0], zy = eye[1] - target[1], zz = eye[2] - target[2];
+    let len = Math.hypot(zx, zy, zz);
+    zx /= len; zy /= len; zz /= len;
+
+    let xx = up[1] * zz - up[2] * zy;
+    let xy = up[2] * zx - up[0] * zz;
+    let xz = up[0] * zy - up[1] * zx;
+    len = Math.hypot(xx, xy, xz);
+    xx /= len; xy /= len; xz /= len;
+
+    const yx = zy * xz - zz * xy;
+    const yy = zz * xx - zx * xz;
+    const yz = zx * xy - zy * xx;
+
+    return new Float32Array([
+      xx, yx, zx, 0,
+      xy, yy, zy, 0,
+      xz, yz, zz, 0,
+      -(xx * eye[0] + xy * eye[1] + xz * eye[2]),
+      -(yx * eye[0] + yy * eye[1] + yz * eye[2]),
+      -(zx * eye[0] + zy * eye[1] + zz * eye[2]),
+      1,
+    ]);
+  },
+
+  /** a × b (apply b first, then a). */
+  multiply(a, b) {
+    const out = new Float32Array(16);
+    for (let col = 0; col < 4; col++) {
+      for (let row = 0; row < 4; row++) {
+        let sum = 0;
+        for (let k = 0; k < 4; k++) sum += a[k * 4 + row] * b[col * 4 + k];
+        out[col * 4 + row] = sum;
+      }
+    }
+    return out;
+  },
+
+  invert(m) {
+    const [a00, a01, a02, a03, a10, a11, a12, a13, a20, a21, a22, a23, a30, a31, a32, a33] = m;
+    const b00 = a00 * a11 - a01 * a10, b01 = a00 * a12 - a02 * a10, b02 = a00 * a13 - a03 * a10;
+    const b03 = a01 * a12 - a02 * a11, b04 = a01 * a13 - a03 * a11, b05 = a02 * a13 - a03 * a12;
+    const b06 = a20 * a31 - a21 * a30, b07 = a20 * a32 - a22 * a30, b08 = a20 * a33 - a23 * a30;
+    const b09 = a21 * a32 - a22 * a31, b10 = a21 * a33 - a23 * a31, b11 = a22 * a33 - a23 * a32;
+    const inv = 1 / (b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06);
+
+    return new Float32Array([
+      (a11 * b11 - a12 * b10 + a13 * b09) * inv, (a02 * b10 - a01 * b11 - a03 * b09) * inv,
+      (a31 * b05 - a32 * b04 + a33 * b03) * inv, (a22 * b04 - a21 * b05 - a23 * b03) * inv,
+      (a12 * b08 - a10 * b11 - a13 * b07) * inv, (a00 * b11 - a02 * b08 + a03 * b07) * inv,
+      (a32 * b02 - a30 * b05 - a33 * b01) * inv, (a20 * b05 - a22 * b02 + a23 * b01) * inv,
+      (a10 * b10 - a11 * b08 + a13 * b06) * inv, (a01 * b08 - a00 * b10 - a03 * b06) * inv,
+      (a30 * b04 - a31 * b02 + a33 * b00) * inv, (a21 * b02 - a20 * b04 - a23 * b00) * inv,
+      (a11 * b07 - a10 * b09 - a12 * b06) * inv, (a00 * b09 - a01 * b07 + a02 * b06) * inv,
+      (a31 * b01 - a30 * b03 - a32 * b00) * inv, (a20 * b03 - a21 * b01 + a22 * b00) * inv,
+    ]);
+  },
+};
+
+/* ---- small colour / vector helpers ---- */
+
+/** '#rrggbb' -> [r, g, b] in 0..1 (sRGB). */
+const hexToRgb = (hex) => [0, 2, 4].map((i) => parseInt(hex.slice(1 + i, 3 + i), 16) / 255);
+
+/** Approximate sRGB -> linear, so lighting maths happens in linear space. */
+const toLinear = (rgb) => rgb.map((v) => Math.pow(v, 2.2));
+
+const scaleVec = (v, s) => v.map((x) => x * s);
+
+/* ---- 3x3 rotation helpers (row-major arrays of 9) used by the mesh builder ---- */
+
+/** Rotation by Euler angles, applied in the order Z, then X, then Y. */
+function rotationMatrix3(rx, ry, rz) {
+  const [cx, sx, cy, sy, cz, sz] = [Math.cos(rx), Math.sin(rx), Math.cos(ry), Math.sin(ry), Math.cos(rz), Math.sin(rz)];
+  const Rz = [cz, -sz, 0, sz, cz, 0, 0, 0, 1];
+  const Rx = [1, 0, 0, 0, cx, -sx, 0, sx, cx];
+  const Ry = [cy, 0, sy, 0, 1, 0, -sy, 0, cy];
+  return mul3(Ry, mul3(Rx, Rz));
+}
+
+function mul3(a, b) {
+  const out = new Array(9);
+  for (let r = 0; r < 3; r++)
+    for (let c = 0; c < 3; c++)
+      out[r * 3 + c] = a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c];
+  return out;
+}
+
+/** Rotation that turns the +Y axis into the direction `d` (need not be normalised). */
+function rotationFromY(d) {
+  const len = Math.hypot(...d);
+  const [x, y, z] = d.map((v) => v / len);
+  if (y > 0.99999) return [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  if (y < -0.99999) return [1, 0, 0, 0, -1, 0, 0, 0, -1];
+  // axis = Y × d, angle = acos(y)
+  const ax = z, az = -x;
+  const s = Math.hypot(ax, az), c = y;
+  const kx = ax / s, kz = az / s, t = 1 - c;
+  return [
+    c + kx * kx * t, -kz * s, kx * kz * t,
+    kz * s, c, -kx * s,
+    kx * kz * t, kx * s, c + kz * kz * t,
+  ];
+}
+
+
+/* ---- src/geometry.js ---- */
+/* Procedural geometry: every shape in the arena is built from the few primitives below.
+   Nothing is imported; the only inputs are numbers.
+
+   Shape positions
+     box, cyl, frustum   `at` is the centre of the BOTTOM face (so shapes stack: next y = previous y + height).
+                         Pass `center: true` to put `at` at the geometric centre instead.
+     sphere              `at` is the centre.
+
+   Common options
+     color   '#rrggbb'
+     kind    Kind.* (how the fragment shader treats the surface)
+     shine   0..1 specular strength
+     rot     [rx, ry, rz] Euler angles in radians (rotation happens around `at`)            */
+
+/** Surface kinds, mirrored in the GLSL (see shaders.js). */
+const Kind = { STANDARD: 0, WATER: 1, GRASS: 2, STONE: 3 };
+
+/* ---------------------------------------------------------------- raw shape generators
+   Each returns { p: positions, n: normals, i: indices } for a unit-sized shape. */
+
+/** Unit box: x and z from -0.5 to 0.5, y from 0 to 1. Six flat faces, wound counter-clockwise from outside. */
+function makeBox() {
+  const faces = [
+    { n: [1, 0, 0],  c: [[.5, 0, .5], [.5, 0, -.5], [.5, 1, -.5], [.5, 1, .5]] },
+    { n: [-1, 0, 0], c: [[-.5, 0, -.5], [-.5, 0, .5], [-.5, 1, .5], [-.5, 1, -.5]] },
+    { n: [0, 1, 0],  c: [[-.5, 1, .5], [.5, 1, .5], [.5, 1, -.5], [-.5, 1, -.5]] },
+    { n: [0, -1, 0], c: [[-.5, 0, -.5], [.5, 0, -.5], [.5, 0, .5], [-.5, 0, .5]] },
+    { n: [0, 0, 1],  c: [[-.5, 0, .5], [.5, 0, .5], [.5, 1, .5], [-.5, 1, .5]] },
+    { n: [0, 0, -1], c: [[.5, 0, -.5], [-.5, 0, -.5], [-.5, 1, -.5], [.5, 1, -.5]] },
+  ];
+  const p = [], n = [], i = [];
+  for (const face of faces) {
+    const base = p.length / 3;
+    for (const corner of face.c) { p.push(...corner); n.push(...face.n); }
+    i.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  }
+  return { p, n, i };
+}
+
+/** Cone / cylinder along +Y from y=0 (radius rBottom) to y=1 (radius rTop), unit height. */
+function makeCylinder(rBottom, rTop, segments, caps) {
+  const p = [], n = [], i = [];
+  const slope = rBottom - rTop;                                   // side normals lean outward when the base is wider
+  for (let s = 0; s <= segments; s++) {
+    const a = (s / segments) * Math.PI * 2, cx = Math.cos(a), sz = Math.sin(a);
+    const len = Math.hypot(1, slope);
+    p.push(cx * rBottom, 0, sz * rBottom, cx * rTop, 1, sz * rTop);
+    n.push(cx / len, slope / len, sz / len, cx / len, slope / len, sz / len);
+    if (s < segments) {
+      const k = s * 2;
+      i.push(k, k + 2, k + 1, k + 1, k + 2, k + 3);
+    }
+  }
+  const cap = (y, radius, ny) => {
+    if (radius <= 0) return;
+    const base = p.length / 3;
+    p.push(0, y, 0); n.push(0, ny, 0);
+    for (let s = 0; s <= segments; s++) {
+      const a = (s / segments) * Math.PI * 2;
+      p.push(Math.cos(a) * radius, y, Math.sin(a) * radius); n.push(0, ny, 0);
+      if (s < segments) ny > 0 ? i.push(base, base + s + 2, base + s + 1) : i.push(base, base + s + 1, base + s + 2);
+    }
+  };
+  if (caps) { cap(1, rTop, 1); cap(0, rBottom, -1); }
+  return { p, n, i };
+}
+
+/** Rectangular frustum: bottom rectangle (bw x bd) at y=0, top rectangle (tw x td) at y=h. Flat-shaded. */
+function makeFrustum(bw, bd, tw, td, h) {
+  const p = [], n = [], i = [];
+  const bottom = [[-bw / 2, 0, -bd / 2], [bw / 2, 0, -bd / 2], [bw / 2, 0, bd / 2], [-bw / 2, 0, bd / 2]];
+  const top = [[-tw / 2, h, -td / 2], [tw / 2, h, -td / 2], [tw / 2, h, td / 2], [-tw / 2, h, td / 2]];
+  const quad = (a, b, c, d) => {                                   // counter-clockwise seen from outside
+    const e1 = b.map((v, k) => v - a[k]), e2 = d.map((v, k) => v - a[k]);
+    let nx = e1[1] * e2[2] - e1[2] * e2[1], ny = e1[2] * e2[0] - e1[0] * e2[2], nz = e1[0] * e2[1] - e1[1] * e2[0];
+    const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
+    const base = p.length / 3;
+    for (const v of [a, b, c, d]) { p.push(...v); n.push(nx, ny, nz); }
+    i.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  };
+  for (let s = 0; s < 4; s++) {
+    const t = (s + 1) % 4;
+    quad(bottom[s], bottom[t], top[t], top[s]);
+  }
+  quad(top[3], top[2], top[1], top[0]);                            // top
+  quad(bottom[0], bottom[1], bottom[2], bottom[3]);                // bottom
+  return { p, n, i };
+}
+
+function makeSphere(slices = 18, rings = 12) {
+  const p = [], n = [], i = [];
+  for (let r = 0; r <= rings; r++) {
+    const phi = (r / rings) * Math.PI;
+    for (let s = 0; s <= slices; s++) {
+      const th = (s / slices) * Math.PI * 2;
+      const x = Math.sin(phi) * Math.cos(th), y = Math.cos(phi), z = Math.sin(phi) * Math.sin(th);
+      p.push(x, y, z); n.push(x, y, z);
+      if (r < rings && s < slices) {
+        const k = r * (slices + 1) + s;
+        i.push(k, k + slices + 1, k + 1, k + 1, k + slices + 1, k + slices + 2);
+      }
+    }
+  }
+  return { p, n, i };
+}
+
+/* ---------------------------------------------------------------- mesh builder */
+
+class MeshBuilder {
+  constructor() {
+    this.vertices = [];                 // interleaved: pos(3) normal(3) colour(3, linear) kind(1) shine(1)
+    this.indices = [];
+    this.unitBox = makeBox();
+    this.unitSphere = makeSphere();
+  }
+
+  /** Transforms a raw shape by scale -> rotation -> translation and appends it. */
+  append(shape, { scale = [1, 1, 1], rotation = [1, 0, 0, 0, 1, 0, 0, 0, 1], at = [0, 0, 0], color, kind = Kind.STANDARD, shine = 0 }) {
+    const rgb = toLinear(hexToRgb(color));
+    const first = this.vertices.length / 11;
+    const R = rotation;
+    for (let k = 0; k < shape.p.length; k += 3) {
+      const x = shape.p[k] * scale[0], y = shape.p[k + 1] * scale[1], z = shape.p[k + 2] * scale[2];
+      // normals use the inverse-transpose: divide by the scale before rotating
+      let nx = shape.n[k] / scale[0], ny = shape.n[k + 1] / scale[1], nz = shape.n[k + 2] / scale[2];
+      const rx = R[0] * nx + R[1] * ny + R[2] * nz, ry = R[3] * nx + R[4] * ny + R[5] * nz, rz = R[6] * nx + R[7] * ny + R[8] * nz;
+      const l = Math.hypot(rx, ry, rz) || 1;
+      this.vertices.push(
+        R[0] * x + R[1] * y + R[2] * z + at[0],
+        R[3] * x + R[4] * y + R[5] * z + at[1],
+        R[6] * x + R[7] * y + R[8] * z + at[2],
+        rx / l, ry / l, rz / l, rgb[0], rgb[1], rgb[2], kind, shine,
+      );
+    }
+    for (const index of shape.i) this.indices.push(first + index);
+  }
+
+  /** Moves `at` from the geometric centre to the bottom centre when `center` is set. */
+  anchor(o, height) {
+    const rot = o.rotation || rotationMatrix3(...(o.rot || [0, 0, 0]));
+    let at = o.at;
+    if (o.center) {
+      // shift by -height/2 along the shape's own up axis
+      at = [at[0] - rot[1] * height / 2, at[1] - rot[4] * height / 2, at[2] - rot[7] * height / 2];
+    }
+    return { ...o, rotation: rot, at };
+  }
+
+  box(o) {
+    const [w, h, d] = o.size;
+    this.append(this.unitBox, { ...this.anchor(o, h), scale: [w, h, d] });
+  }
+
+  /** Cylinder or cone: radius `r` at the bottom, `rTop` (default r) at the top. */
+  cyl(o) {
+    const seg = o.seg || 16;
+    const shape = makeCylinder(o.r, o.rTop === undefined ? o.r : o.rTop, seg, o.caps !== false);
+    this.append(shape, { ...this.anchor(o, o.h), scale: [1, o.h, 1] });
+  }
+
+  /** Rectangular frustum (pyramid when the top is tiny). */
+  frustum(o) {
+    const shape = makeFrustum(o.bottom[0], o.bottom[1], o.top[0], o.top[1], o.h);
+    this.append(shape, this.anchor(o, o.h));
+  }
+
+  sphere(o) {
+    const radii = o.radii || [o.r, o.r, o.r];
+    this.append(this.unitSphere, { ...o, rotation: rotationMatrix3(...(o.rot || [0, 0, 0])), scale: radii });
+  }
+
+  /** Thin cylinder between two points (ropes, poles, chains, cannon barrels). */
+  rod(from, to, r, o = {}) {
+    const d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+    this.cyl({ seg: 8, ...o, at: from, r, h: Math.hypot(...d), rotation: rotationFromY(d) });
+  }
+
+  /** Finished GPU-ready arrays. */
+  build() {
+    return { vertices: new Float32Array(this.vertices), indices: new Uint32Array(this.indices) };
+  }
+}
+
+
+/* ---- src/arena.js ---- */
+/* The arena, assembled from primitives. Units are "tiles": the lawn is 18 wide and 32 long.
+
+   Layout (looking down, +Z = blue team's end, -Z = red team's end):
+
+        castle (red)           z = -23.5
+        king tower             z = -14.2
+        princess towers        x = ±5.5, z = -10.8
+        ──── river ────        z in [-1, 1], two bridges at x = ±5.5
+        princess towers        x = ±5.5, z = +10.8
+        king tower             z = +14.2
+        castle (blue)          z = +23.5
+        stands on both long sides, outer wall all around.
+
+   Heights: grass top y = 0, paving top y = -0.3, river floor y = -1.                                   */
+
+const C = {
+  blue: '#2f6fe0', red: '#e0393e', gold: '#f2b838', cream: '#efe3b8',
+  stone: '#d3c5a5', stoneLight: '#e3d7ba', stoneDark: '#b9ac8e', rock: '#a39682', rockDark: '#8a7d6a',
+  sand: '#e6d3a4', grass: '#66ba38', water: '#35a8ea',
+  wood: '#9a6a3c', darkWood: '#6a4524', window: '#2b3358', door: '#5a3a22',
+  bush: '#4fae3a', bushDark: '#3d9632', iron: '#3a4150', wall: '#d3c6a9',
+};
+const teamColor = (s) => (s > 0 ? C.blue : C.red);
+const { STANDARD, WATER, GRASS, STONE } = Kind;
+
+/** Deterministic pseudo-random numbers, so the rock boulders are the same every load. */
+function seededRandom(seed) {
+  let x = seed;
+  return () => (x = (x * 1664525 + 1013904223) % 4294967296) / 4294967296;
+}
+
+/* ------------------------------------------------------------------ small reusable props */
+
+function crown(b, [x, y, z], size = 1) {
+  const t = 0.14 * size;
+  b.box({ at: [x, y, z], size: [1.3 * size, 0.36 * size, t], center: true, color: C.gold, shine: 0.7 });
+  for (const dx of [-0.5, 0, 0.5]) {
+    const tall = dx === 0 ? 0.85 : 0.6;
+    b.frustum({ at: [x + dx * size, y + 0.18 * size, z], bottom: [0.34 * size, t], top: [0.05 * size, t], h: tall * size, color: C.gold, shine: 0.7 });
+    b.sphere({ at: [x + dx * size, y + (0.18 + tall) * size, z], r: 0.085 * size, color: C.gold, shine: 0.7 });
+  }
+}
+
+function flag(b, [x, y, z], height, color, dir = 1) {
+  b.rod([x, y, z], [x, y + height, z], 0.06, { color: C.darkWood });
+  b.sphere({ at: [x, y + height + 0.05, z], r: 0.1, color: C.gold, shine: 0.6 });
+  b.box({ at: [x + dir * 0.5, y + height - 0.55, z], size: [1.0, 0.5, 0.05], color });
+}
+
+function bush(b, x, z, r = 0.8) {
+  b.sphere({ at: [x, r * 0.7, z], radii: [r, r * 0.8, r], color: C.bush });
+  b.sphere({ at: [x + r * 0.7, r * 0.5, z + r * 0.3], radii: [r * 0.6, r * 0.5, r * 0.6], color: C.bushDark });
+  b.sphere({ at: [x - r * 0.6, r * 0.45, z - r * 0.4], radii: [r * 0.55, r * 0.45, r * 0.55], color: C.bush });
+}
+
+/** Row of battlement blocks along a straight edge. */
+function merlons(b, from, to, y, size, color, step = 1.0) {
+  const length = Math.hypot(to[0] - from[0], to[1] - from[1]);
+  const count = Math.max(1, Math.round(length / step));
+  for (let k = 0; k <= count; k++) {
+    const t = k / count;
+    b.box({ at: [from[0] + (to[0] - from[0]) * t, y, from[1] + (to[1] - from[1]) * t], size, center: false, color, kind: STONE });
+  }
+}
+
+/* ------------------------------------------------------------------ island, lawn, river */
+
+function island(b) {
+  // floating rock underneath
+  b.frustum({ at: [0, -13, 0], bottom: [9, 11], top: [42, 60], h: 12, color: C.rock, kind: STONE });
+  const random = seededRandom(7);
+  for (let k = 0; k < 46; k++) {                         // boulders stuck to the sides for a rough silhouette
+    const depth = random();                              // 0 = top rim, 1 = bottom tip
+    const halfW = 21 - 16.5 * depth, halfD = 30 - 24.5 * depth;
+    const alongX = random() < 0.5;
+    const edge = (random() < 0.5 ? -1 : 1);
+    const x = alongX ? (random() * 2 - 1) * halfW : edge * halfW;
+    const z = alongX ? edge * halfD : (random() * 2 - 1) * halfD;
+    const r = 1.3 + random() * 1.6;
+    b.sphere({ at: [x, -1.5 - depth * 11, z], radii: [r, r * 0.8, r], color: random() < 0.5 ? C.rock : C.rockDark, kind: STONE });
+  }
+  // river bed and paved ground either side of the river
+  b.box({ at: [0, -1.4, 0], size: [42, 0.4, 60], color: C.stoneDark, kind: STONE });
+  for (const s of [1, -1]) b.box({ at: [0, -1.0, s * 15.5], size: [42, 0.7, 29], color: C.stoneLight, kind: STONE });
+}
+
+function lawn(b) {
+  for (const s of [1, -1]) {
+    b.box({ at: [0, -0.3, s * 8.5], size: [18, 0.3, 15], color: C.grass, kind: GRASS });
+  }
+  b.box({ at: [0, -1.0, 0], size: [33, 0.62, 2], color: C.water, kind: WATER });          // river
+}
+
+function paths(b) {
+  for (const s of [1, -1]) {
+    for (const sx of [-1, 1]) b.box({ at: [sx * 5.5, 0, s * 5.2], size: [2.0, 0.04, 8.8], color: C.sand, kind: STONE });   // lanes
+    b.box({ at: [0, 0, s * 12.4], size: [11, 0.04, 1.6], color: C.sand, kind: STONE });                                // link to king platform
+    b.box({ at: [0, -0.3, s * 18.4], size: [2.6, 0.32, 4.4], color: C.sand, kind: STONE });                            // approach to the castle
+  }
+}
+
+/* ------------------------------------------------------------------ bridges */
+
+function bridges(b) {
+  for (const x of [-5.5, 5.5]) {
+    const gold = { color: C.gold, shine: 0.6 };
+    b.box({ at: [x, 0.42, 0], size: [3.0, 0.38, 1.9], ...gold });                                  // flat top
+    for (const s of [1, -1]) b.box({ at: [x, 0.38, s * 1.62], size: [3.0, 0.38, 1.7], rot: [s * 0.27, 0, 0], center: true, ...gold });   // ramps
+    for (const sx of [-1, 1]) b.box({ at: [x + sx * 1.5, 0.8, 0], size: [0.28, 0.25, 3.6], ...gold });                                 // rails
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      b.cyl({ at: [x + sx * 1.5, 0, sz * 1.75], r: 0.17, h: 0.95, color: C.cream });
+      b.sphere({ at: [x + sx * 1.5, 1.02, sz * 1.75], r: 0.22, ...gold });
+    }
+    b.box({ at: [x, -0.9, 0], size: [2.2, 0.9, 1.0], color: C.darkWood });                           // support under the deck
+  }
+}
+
+/* ------------------------------------------------------------------ towers */
+
+function tower(b, x, z, s, king) {
+  const team = teamColor(s), front = -s;                  // fronts face the river
+  const w = king ? 4.4 : 2.9, h = king ? 5.0 : 3.5;
+  const platform = king ? [8.2, 5.8] : [4.6, 4.6];
+
+  b.box({ at: [x, 0, z], size: [platform[0], 0.1, platform[1]], color: C.stoneLight, kind: STONE });
+  b.box({ at: [x, 0.1, z], size: [w, h, w], color: C.stone, kind: STONE });                       // body
+  b.box({ at: [x, 0.1, z], size: [w + 0.3, 0.8, w + 0.3], color: team });                         // plinth in team colour
+  b.box({ at: [x, h - 0.8, z], size: [w + 0.06, 0.45, w + 0.06], color: team });                  // band under the ledge
+  b.box({ at: [x, h + 0.1, z], size: [w + 0.6, 0.4, w + 0.6], color: C.stoneLight, kind: STONE });// ledge
+  const half = (w + 0.6) / 2 - 0.25, y = h + 0.5, m = [0.5, 0.5, 0.5];
+  merlons(b, [x - half, z - half], [x + half, z - half], y, m, C.stoneLight, 0.95);                 // four sides of the ledge
+  merlons(b, [x - half, z + half], [x + half, z + half], y, m, C.stoneLight, 0.95);
+  merlons(b, [x - half, z - half + 0.95], [x - half, z + half - 0.95], y, m, C.stoneLight, 0.95);
+  merlons(b, [x + half, z - half + 0.95], [x + half, z + half - 0.95], y, m, C.stoneLight, 0.95);
+
+  // cannon, aimed at the enemy
+  const top = h + 0.5, cs = king ? 1.4 : 1;
+  b.cyl({ at: [x, top, z], r: 0.7 * cs, h: 0.3 * cs, color: C.iron, shine: 0.4 });
+  b.rod([x, top + 0.55 * cs, z], [x, top + 0.8 * cs, z + front * 1.7 * cs], 0.36 * cs, { color: '#111111', shine: 0.5 });
+  b.cyl({ at: [x, top + 0.75 * cs, z + front * 1.5 * cs], r: 0.4 * cs, h: 0.12, rot: [Math.PI / 2 - 0.15, 0, 0], color: C.gold, shine: 0.7 });
+  for (const [dx, dz] of [[0.9, -0.5], [1.1, 0.1], [0.75, 0.55]]) b.sphere({ at: [x + dx * cs * (king ? 1.2 : 1), top + 0.25, z + dz * cs], r: 0.22, color: C.iron, shine: 0.6 });
+
+  crown(b, [x, h * 0.55 + 0.1, z + front * (w / 2 + 0.05)], king ? 1.5 : 1.0);
+  for (const sx of [-1, 1]) b.box({ at: [x + sx * (w / 2 + 0.04), h - 2.6, z], size: [0.07, 1.7, 0.9], color: team });     // side banners
+}
+
+function towers(b) {
+  for (const s of [1, -1]) {
+    for (const sx of [-1, 1]) tower(b, sx * 5.5, s * 10.8, s, false);
+    tower(b, 0, s * 14.2, s, true);
+  }
+}
+
+/* ------------------------------------------------------------------ stands */
+
+function stands(b) {
+  const length = 12.4, steps = 4;
+  for (const s of [1, -1]) {
+    const team = teamColor(s), zc = s * 9.4;
+    for (const sx of [-1, 1]) {
+      for (let i = 0; i < steps; i++) {                                              // terraces
+        const top = 0.6 + i * 0.6;
+        b.box({ at: [sx * (10.4 + i * 1.5), -0.3, zc], size: [1.5, top + 0.3, length], color: i % 2 ? C.stone : C.stoneLight, kind: STONE });
+      }
+      b.box({ at: [sx * 17.9, -0.3, zc], size: [0.9, 5.6, length], color: C.wall, kind: STONE });             // back wall
+
+      b.box({ at: [sx * 9.4, 0, zc], size: [0.25, 0.8, 12.8], color: C.darkWood });                            // field fence
+      for (let k = 0; k <= 13; k++) b.box({ at: [sx * 9.4, 0.8, zc - 6.0 + k * 0.93], size: [0.34, 0.34, 0.5], color: C.gold, shine: 0.5 });
+
+      const slope = 0.3;                                                                                       // awnings
+      for (const [cx, cy] of [[12.4, 3.7], [15.6, 4.7]]) {
+        const ax = sx * cx;
+        b.box({ at: [ax, cy, zc], size: [3.0, 0.12, 11.6], rot: [0, 0, sx * slope], center: true, color: team, shine: 0.15 });
+        for (const dz of [-5.5, 5.5]) {
+          b.rod([ax - sx * 1.5 * Math.cos(slope), -0.3, zc + dz], [ax - sx * 1.5 * Math.cos(slope), cy - 1.5 * Math.sin(slope), zc + dz], 0.09, { color: C.darkWood });
+          b.rod([ax + sx * 1.5 * Math.cos(slope), -0.3, zc + dz], [ax + sx * 1.5 * Math.cos(slope), cy + 1.5 * Math.sin(slope), zc + dz], 0.09, { color: C.darkWood });
+        }
+      }
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ castles */
+
+function castle(b, s) {
+  const team = teamColor(s), front = -s, z = s * 23.5;
+  const faceZ = z + front * 3.04;
+
+  b.box({ at: [0, -0.3, z], size: [13, 6.9, 6], color: C.wall, kind: STONE });                              // keep
+  b.box({ at: [0, 6.3, z], size: [13.6, 0.5, 6.6], color: C.gold, shine: 0.5 });                            // cornice
+  b.frustum({ at: [0, 6.8, z], bottom: [14.2, 7.2], top: [1.4, 1.0], h: 6.8, color: team, shine: 0.25 });   // roof
+  b.box({ at: [0, 13.4, z], size: [1.0, 0.25, 0.8], color: C.gold, shine: 0.6 });
+  for (let k = -2; k <= 2; k++) {                                                                         // windows
+    b.box({ at: [k * 2.4, 3.1, faceZ], size: [1.0, 1.7, 0.12], color: C.window });
+    b.box({ at: [k * 2.4, 4.85, faceZ], size: [1.3, 0.22, 0.14], color: C.gold, shine: 0.5 });
+  }
+  b.box({ at: [0, -0.3, faceZ], size: [2.4, 2.7, 0.14], color: C.door });                                 // door
+  b.box({ at: [0, 2.4, faceZ], size: [2.8, 0.25, 0.16], color: C.gold, shine: 0.5 });
+  crown(b, [0, 5.7, faceZ + front * 0.05], 1.7);
+  for (const sx of [-1, 1]) for (let k = 0; k < 4; k++) b.box({ at: [sx * 6.5, 0.4 + k * 1.7, z + front * 3.0], size: [0.55, 0.7, 0.4], color: C.gold, shine: 0.4 });   // quoins
+
+  for (const sx of [-1, 1]) {                                                                             // turrets
+    const x = sx * 7.6;
+    b.cyl({ at: [x, -0.3, z + front * 0.6], r: 1.4, h: 8.8, seg: 20, color: C.wall, kind: STONE });
+    b.cyl({ at: [x, 6.0, z + front * 0.6], r: 1.5, h: 0.3, seg: 20, color: C.gold, shine: 0.5 });
+    b.cyl({ at: [x, 8.5, z + front * 0.6], r: 1.7, rTop: 1.7, h: 0.5, seg: 20, color: C.stoneLight, kind: STONE });
+    b.cyl({ at: [x, 9.0, z + front * 0.6], r: 2.0, rTop: 0, h: 3.8, seg: 20, color: team, shine: 0.25 });
+    for (const k of [0, 1]) b.box({ at: [x, 3.2 + k * 2.4, z + front * 2.02], size: [0.5, 0.9, 0.1], color: C.window });
+    flag(b, [x, 12.8, z + front * 0.6], 1.4, team, sx);
+  }
+  for (const sx of [-1, 1]) { bush(b, sx * 4.2, z + front * 3.9, 0.85); bush(b, sx * 5.6, z + front * 4.7, 0.65); }
+
+  for (const sx of [-1, 1]) {                                                                             // side wings
+    const x = sx * 13.2, wz = z + front * 0.4;
+    b.box({ at: [x, -0.3, wz], size: [6.2, 4.4, 5.0], color: C.wall, kind: STONE });
+    b.box({ at: [x, 4.1, wz], size: [6.6, 0.4, 5.4], color: C.gold, shine: 0.5 });
+    b.frustum({ at: [x, 4.5, wz], bottom: [7.0, 5.8], top: [1.0, 0.8], h: 3.6, color: team, shine: 0.25 });
+    for (const k of [-1, 1]) b.box({ at: [x + k * 1.6, 1.6, wz + front * 2.54], size: [0.9, 1.4, 0.12], color: C.window });
+    b.box({ at: [x, -0.3, wz + front * 2.54], size: [1.6, 2.0, 0.14], color: C.door });
+  }
+}
+
+/* ------------------------------------------------------------------ wall, corners, river ends */
+
+function rimWall(b) {
+  const X = 19.5, Z = 29.3, t = 1.4, h = 2.6, y = -0.3;
+  b.box({ at: [0, y, Z], size: [41.4, h + 0.3, t], color: C.wall, kind: STONE });
+  b.box({ at: [0, y, -Z], size: [41.4, h + 0.3, t], color: C.wall, kind: STONE });
+  merlons(b, [-X, Z], [X, Z], h - 0.3, [1.2, 0.9, t], C.stoneLight, 2.4);
+  merlons(b, [-X, -Z], [X, -Z], h - 0.3, [1.2, 0.9, t], C.stoneLight, 2.4);
+  for (const sx of [-1, 1]) for (const s of [1, -1]) {
+    b.box({ at: [sx * X, y, s * 15.6], size: [t, h + 0.3, 27.4], color: C.wall, kind: STONE });
+    merlons(b, [sx * X, s * 2.4], [sx * X, s * 28.6], h - 0.3, [t, 0.9, 1.2], C.stoneLight, 2.4);
+  }
+  for (const sx of [-1, 1]) for (const s of [1, -1]) {                                                // corner turrets
+    b.cyl({ at: [sx * X, y, s * Z], r: 2.0, h: 5.6, seg: 20, color: C.wall, kind: STONE });
+    b.cyl({ at: [sx * X, 5.3, s * Z], r: 2.3, h: 0.5, seg: 20, color: C.stoneLight, kind: STONE });
+    b.cyl({ at: [sx * X, 5.8, s * Z], r: 2.5, rTop: 0, h: 3.6, seg: 20, color: teamColor(s), shine: 0.25 });
+    flag(b, [sx * X, 9.3, s * Z], 1.3, teamColor(s), -sx);
+  }
+}
+
+function riverEnds(b) {
+  // west: stone pipe pouring water down a chute into the river
+  b.cyl({ at: [-19.4, 2.6, 0], r: 2.2, h: 4.0, rot: [0, 0, -Math.PI / 2], seg: 24, color: C.wall, kind: STONE });
+  b.cyl({ at: [-15.45, 2.6, 0], r: 1.75, h: 0.06, rot: [0, 0, -Math.PI / 2], seg: 24, color: '#2a7fb8' });
+  b.box({ at: [-13.6, 0.5, 0], size: [5.2, 0.3, 2.0], rot: [0, 0, -0.5], center: true, color: C.water, kind: WATER });
+  for (const sz of [-1, 1]) b.box({ at: [-15.4, -0.8, sz * 1.15], size: [4.4, 3.2, 0.4], color: C.stone, kind: STONE });
+  // east: hexagonal tower where the river ends
+  b.cyl({ at: [16.6, -0.3, 0], r: 2.7, h: 3.4, seg: 6, rot: [0, Math.PI / 6, 0], color: C.wall, kind: STONE });
+  b.cyl({ at: [16.6, 3.0, 0], r: 2.4, h: 0.2, seg: 6, rot: [0, Math.PI / 6, 0], color: '#b98a55' });
+  for (let k = 0; k < 6; k++) {
+    const a = (k / 6) * Math.PI * 2;
+    b.box({ at: [16.6 + Math.cos(a) * 2.5, 3.1, Math.sin(a) * 2.5], size: [0.8, 0.8, 0.8], rot: [0, -a, 0], color: C.stoneLight, kind: STONE });
+  }
+  flag(b, [16.6, 3.1, 0], 2.2, C.red, 1);
+}
+
+function buildArena(b) {
+  island(b);
+  lawn(b);
+  paths(b);
+  bridges(b);
+  towers(b);
+  stands(b);
+  for (const s of [1, -1]) castle(b, s);
+  rimWall(b);
+  riverEnds(b);
+  for (const [x, z] of [[-8, 16.8], [8, 16.8], [-8, -16.8], [8, -16.8], [-9, 2.2], [9, -2.2], [-17.6, 22], [17.6, -22], [-16.5, 16.8], [16.5, -16.8], [16.5, 16.8], [-16.5, -16.8]]) bush(b, x, z, 0.75);
+}
+
+
+/* ---- src/shaders.js ---- */
+/* GLSL sources (WebGL2 / GLSL ES 3.00).
+   Vertices carry position, normal, linear colour, and (kind, shine) set by the mesh builder. */
+
+const GLSL_HEADER = '#version 300 es\nprecision highp float;\n';
+
+/* Surface kinds, shared with geometry.js so the two can't drift apart. */
+const GLSL_KINDS = Object.entries(Kind)
+  .map(([name, value]) => `#define KIND_${name} ${value}.0`)
+  .join('\n');
+
+/* Cheap value noise, used for grass mottling, stone tone and clouds. */
+const GLSL_NOISE = `
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x),
+             mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y);
+}
+float fbm(vec2 p) {
+  float sum = 0.0, amp = 0.5;
+  for (int i = 0; i < 5; i++) { sum += amp * vnoise(p); p = p * 2.03 + 17.0; amp *= 0.5; }
+  return sum;
+}`;
+
+const SHADERS = {
+  /* ---------- main pass ---------- */
+  sceneVS: GLSL_HEADER + `
+in vec3 aPos;
+in vec3 aNrm;
+in vec3 aCol;
+in vec2 aMat;                          // x = kind, y = shine
+uniform mat4 uViewProj, uLightViewProj;
+out vec3 vWorld;
+out vec3 vNormal;
+out vec3 vColor;
+out vec2 vMat;
+out vec4 vLightPos;
+void main() {
+  vWorld = aPos;
+  vNormal = aNrm;
+  vColor = aCol;
+  vMat = aMat;
+  vLightPos = uLightViewProj * vec4(aPos + normalize(aNrm) * 0.08, 1.0);   // normal offset avoids shadow acne
+  gl_Position = uViewProj * vec4(aPos, 1.0);
+}`,
+
+  sceneFS: GLSL_HEADER + 'precision highp sampler2DShadow;\n' + GLSL_KINDS + GLSL_NOISE + `
+in vec3 vWorld;
+in vec3 vNormal;
+in vec3 vColor;
+in vec2 vMat;
+in vec4 vLightPos;
+
+uniform sampler2DShadow uShadowMap;
+uniform float uShadowTexel;
+uniform vec3 uCamera, uSunDir, uSunColor, uSkyAmbient, uGroundAmbient, uFogColor;
+uniform float uFogDensity;
+out vec4 outColor;
+
+float softShadow(vec3 p) {              // 3x3 PCF
+  float sum = 0.0;
+  for (int i = -1; i <= 1; i++)
+    for (int j = -1; j <= 1; j++)
+      sum += texture(uShadowMap, vec3(p.xy + vec2(i, j) * uShadowTexel * 1.2, p.z));
+  return sum / 9.0;
+}
+
+bool isKind(float kind) { return abs(vMat.x - kind) < 0.5; }
+
+void main() {
+  vec3 toCamera = normalize(uCamera - vWorld);
+  float cameraDist = length(uCamera - vWorld);
+
+  // always shade with the normal facing the viewer (cones and thin panels are seen from both sides)
+  vec3 N = normalize(vNormal);
+  vec3 faceN = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
+  if (dot(faceN, toCamera) < 0.0) faceN = -faceN;
+  if (dot(N, faceN) < 0.0) N = -N;
+
+  vec3 L = normalize(uSunDir);
+  vec3 albedo = vColor;
+
+  if (isKind(KIND_GRASS)) {
+    // checkerboard lawn: one tile per world unit, soft mottling, darker plain green on steep banks
+    vec2 tile = floor(vWorld.xz);
+    float checker = mod(tile.x + tile.y, 2.0);
+    float mottle = vnoise(vWorld.xz * 3.0) * 0.5 + vnoise(vWorld.xz * 9.0) * 0.5;
+    float top = smoothstep(0.55, 0.9, N.y);
+    albedo *= mix(0.82, mix(0.9, 1.08, checker), top) * (0.94 + 0.12 * mottle);
+  } else if (isKind(KIND_STONE)) {
+    // Disederhanakan: tanpa tekstur bata/mortar, hanya noise ringan agar tidak terlalu flat
+    albedo *= 1.0 + (vnoise(vWorld.xz * 2.0 + vWorld.y * 2.0) - 0.5) * 0.08;
+  }
+
+  // shadow
+  vec3 lightUV = vLightPos.xyz / vLightPos.w * 0.5 + 0.5;
+  float shadow = 1.0;
+  if (all(greaterThan(lightUV.xy, vec2(0.0))) && all(lessThan(lightUV.xyz, vec3(1.0))))
+    shadow = softShadow(vec3(lightUV.xy, lightUV.z - 0.0015));
+
+  // diffuse: half-lambert wrap blended with plain lambert, plus hemisphere ambient
+  float ndl = dot(N, L);
+  float wrap = pow(clamp(ndl * 0.5 + 0.5, 0.0, 1.0), 2.0);
+  float lit = mix(wrap * 0.55, max(ndl, 0.0), 0.65) * shadow;
+  vec3 ambient = mix(uGroundAmbient, uSkyAmbient, N.y * 0.5 + 0.5);
+  // cheap ambient occlusion: low and down-facing surfaces get a little darker
+  float occlusion = mix(0.78, 1.0, clamp(vWorld.y * 0.35 + 0.7, 0.0, 1.0)) * mix(0.82, 1.0, N.y * 0.5 + 0.5);
+  vec3 color = albedo * (ambient * occlusion + uSunColor * lit);
+
+  float shine = vMat.y;
+  if (shine > 0.0) {
+    vec3 H = normalize(L + toCamera);
+    color += uSunColor * shine * pow(max(dot(N, H), 0.0), 40.0) * shadow;
+    float rim = pow(1.0 - max(dot(N, toCamera), 0.0), 3.0);
+    color += uSkyAmbient * rim * shine * 0.35;
+  }
+
+  // distance fog
+  float fog = 1.0 - exp(-pow(cameraDist * uFogDensity, 1.4));
+  color = mix(color, uFogColor, clamp(fog, 0.0, 1.0));
+
+  // grade: gentle filmic curve + saturation lift for the bright, toy-like look, then gamma
+  color = color / (1.0 + color * 0.18);
+  float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+  color = mix(vec3(luma), color, 1.1);
+  outColor = vec4(pow(max(color, 0.0), vec3(1.0 / 2.2)), 1.0);
+}`,
+
+  /* ---------- shadow pass (depth only) ---------- */
+  shadowVS: GLSL_HEADER + `
+in vec3 aPos;
+uniform mat4 uLightViewProj;
+void main() { gl_Position = uLightViewProj * vec4(aPos, 1.0); }`,
+
+  shadowFS: GLSL_HEADER + `
+out vec4 outColor;
+void main() { outColor = vec4(1.0); }`,
+
+  /* ---------- sky: gradient, sun, clouds above, cloud sea below ---------- */
+  skyVS: GLSL_HEADER + `
+out vec2 vScreen;
+void main() {
+  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);   // one oversized triangle covers the screen
+  vScreen = p * 2.0 - 1.0;
+  gl_Position = vec4(vScreen, 0.9999, 1.0);
+}`,
+
+  skyFS: GLSL_HEADER + GLSL_NOISE + `
+in vec2 vScreen;
+uniform mat4 uInvViewProj;
+uniform vec3 uCamera, uSunDir, uZenith, uHorizon, uSunColor;
+uniform float uTime;
+out vec4 outColor;
+
+void main() {
+  vec4 far = uInvViewProj * vec4(vScreen, 1.0, 1.0);
+  vec3 dir = normalize(far.xyz / far.w - uCamera);
+
+  vec3 sky = mix(uHorizon, uZenith, pow(clamp(dir.y, 0.0, 1.0), 0.55));
+  float sunDot = max(dot(dir, normalize(uSunDir)), 0.0);
+  sky += uSunColor * (pow(sunDot, 600.0) * 4.0 + pow(sunDot, 12.0) * 0.18);
+
+  if (dir.y > 0.01) {                                   // clouds overhead
+    vec2 uv = dir.xz / (dir.y + 0.25) * 1.4 + vec2(uTime * 0.004, 0.0);
+    float cloud = smoothstep(0.52, 0.85, fbm(uv * 1.6));
+    vec3 cloudColor = mix(vec3(1.0), uHorizon * 1.15 + vec3(0.25), 0.25);
+    sky = mix(sky, cloudColor, cloud * 0.85 * smoothstep(0.0, 0.25, dir.y));
+  }
+
+  // below the horizon the sky deepens towards the zenith colour, so the cloud sea reads against it
+  sky = mix(sky, mix(uHorizon, uZenith, 0.5), smoothstep(0.0, -0.3, dir.y));
+
+  if (dir.y < -0.002) {                                 // sea of clouds under the floating island
+    float t = (-26.0 - uCamera.y) / dir.y;
+    vec2 p = uCamera.xz + dir.xz * t;
+    float n = fbm(p * 0.02 + vec2(uTime * 0.006, 0.0)) * 0.65 + fbm(p * 0.07) * 0.35;
+    float cloud = smoothstep(0.38, 0.72, n);
+    vec3 base = mix(vec3(0.84, 0.9, 1.0), uHorizon * 1.2 + vec3(0.2), 0.16);
+    vec3 shaded = mix(base * 0.78, base * 1.08, smoothstep(0.4, 0.8, n));
+    sky = mix(sky, shaded, cloud * smoothstep(0.0, 0.18, -dir.y) * 0.95);
+  }
+
+  outColor = vec4(pow(sky, vec3(1.0 / 2.2)), 1.0);
+}`,
+};
+
+
+/* ---- src/lighting.js ---- */
+/* Static lighting setup and the sun's shadow camera.
+   Colours are sRGB-ish triples; main.js converts them to linear before upload. */
+
+const LIGHTING = {
+  sunDir: [0.55, 0.78, 0.30], sunColor: [1.3, 1.17, 0.98],
+  skyAmbient: [0.62, 0.78, 1.0], groundAmbient: [0.52, 0.5, 0.42],
+  zenith: [0.16, 0.42, 0.95], horizon: [0.62, 0.82, 1.0],
+  fogColor: [0.62, 0.82, 1.0], fogDensity: 0.0016,
+};
+
+/** Orthographic camera looking at the arena centre from the sun's direction. */
+function sunViewProjection(sunDir) {
+  const len = Math.hypot(...sunDir);
+  const dir = sunDir.map((v) => v / len);
+  const eye = dir.map((v) => v * 100);
+  const up = Math.abs(dir[1]) > 0.95 ? [1, 0, 0] : [0, 1, 0];
+  const view = Mat4.lookAt(eye, [0, 4, 0], up);
+  const proj = Mat4.ortho(-46, 46, -38, 38, 20, 210);
+  return Mat4.multiply(proj, view);
+}
+
+
+/* ---- src/camera.js ---- */
+/* Orbit camera: drag to rotate, right-drag / shift-drag to pan, wheel or pinch to zoom,
+   plus named views the camera glides to. World units are the FBX's units; +Y is up. */
+
+const CAMERA_VIEWS = {
+  iso:    { yaw: 0.62, pitch: 0.62, dist: 98,  target: [0, 1, 0] },
+  battle: { yaw: 0,    pitch: 0.95, dist: 72,  target: [0, 0, 4] },      // from the blue end, like the in-game camera
+  top:    { yaw: 0,    pitch: 1.5,  dist: 100, target: [0, 0, 0] },
+  low:    { yaw: 0.35, pitch: 0.2,  dist: 26,  target: [0, 3, 6] },
+};
+const INTRO_START = { yaw: 2.4, pitch: 0.95, dist: 190, target: [0, 1, 0] };
+
+const MIN_PITCH = 0.08, MAX_PITCH = 1.52;
+const MIN_DIST = 10, MAX_DIST = 220;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+class OrbitCamera {
+  constructor(canvas) {
+    Object.assign(this, { ...INTRO_START, target: [...INTRO_START.target] });
+    this.autoRotate = false;
+    this.glide = null;                 // active transition to a named view
+    this.pointers = new Set();
+    this.dragging = null;              // { x, y, pan } while a pointer is down
+    this.pinchDistance = null;
+    this.bindInput(canvas);
+  }
+
+  /** World-space camera position. */
+  get eye() {
+    const cosPitch = Math.cos(this.pitch);
+    return [
+      this.target[0] + this.dist * cosPitch * Math.sin(this.yaw),
+      this.target[1] + this.dist * Math.sin(this.pitch),
+      this.target[2] + this.dist * cosPitch * Math.cos(this.yaw),
+    ];
+  }
+
+  get isDragging() { return this.dragging !== null; }
+
+  /** Jump to an explicit pose (used by headless screenshots). */
+  setPose(pose) {
+    Object.assign(this, pose);
+    this.glide = null;
+  }
+
+  /** Smoothly move to a named view from CAMERA_VIEWS. */
+  flyTo(name) {
+    const view = CAMERA_VIEWS[name];
+    let yawDelta = view.yaw - this.yaw;
+    yawDelta = Math.atan2(Math.sin(yawDelta), Math.cos(yawDelta));     // take the short way round
+    this.glide = {
+      progress: 0,
+      seconds: this.dist > 170 ? 3.2 : 1.1,                            // slow opening shot
+      from: { yaw: this.yaw, pitch: this.pitch, dist: this.dist, target: [...this.target] },
+      to: { yaw: this.yaw + yawDelta, pitch: view.pitch, dist: view.dist, target: view.target },
+    };
+  }
+
+  update(dt) {
+    if (this.glide) {
+      const g = this.glide;
+      g.progress = Math.min(1, g.progress + dt / g.seconds);
+      const e = g.progress * g.progress * (3 - 2 * g.progress);        // smoothstep easing
+      for (const key of ['yaw', 'pitch', 'dist']) this[key] = g.from[key] + (g.to[key] - g.from[key]) * e;
+      for (let i = 0; i < 3; i++) this.target[i] = g.from.target[i] + (g.to.target[i] - g.from.target[i]) * e;
+      if (g.progress >= 1) this.glide = null;
+    }
+    if (this.autoRotate && !this.dragging) this.yaw += dt * 0.12;
+  }
+
+  zoomBy(factor) {
+    this.dist = clamp(this.dist * factor, MIN_DIST, MAX_DIST);
+    this.glide = null;
+  }
+
+  rotateBy(dx, dy) {
+    this.yaw -= dx * 0.006;
+    this.pitch = clamp(this.pitch + dy * 0.005, MIN_PITCH, MAX_PITCH);
+  }
+
+  panBy(dx, dy) {
+    const scale = this.dist * 0.0011;
+    const cosYaw = Math.cos(this.yaw), sinYaw = Math.sin(this.yaw), sinPitch = Math.sin(this.pitch);
+    this.target[0] += (-dx * cosYaw + dy * sinYaw * sinPitch) * scale;
+    this.target[2] += (dx * sinYaw + dy * cosYaw * sinPitch) * scale;
+  }
+
+  bindInput(canvas) {
+    canvas.addEventListener('pointerdown', (e) => {
+      this.pointers.add(e.pointerId);
+      canvas.setPointerCapture(e.pointerId);
+      this.dragging = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey };
+      this.glide = null;
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+      if (!this.dragging || this.pointers.size > 1) return;           // two fingers = pinch, not rotate
+      const dx = e.clientX - this.dragging.x, dy = e.clientY - this.dragging.y;
+      this.dragging.x = e.clientX;
+      this.dragging.y = e.clientY;
+      if (this.dragging.pan) this.panBy(dx, dy); else this.rotateBy(dx, dy);
+    });
+
+    const release = (e) => {
+      this.pointers.delete(e.pointerId);
+      if (!this.pointers.size) this.dragging = null;
+    };
+    canvas.addEventListener('pointerup', release);
+    canvas.addEventListener('pointercancel', release);
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      this.zoomBy(Math.exp(e.deltaY * 0.0012));
+    }, { passive: false });
+
+    canvas.addEventListener('touchmove', (e) => {
+      if (e.touches.length !== 2) return;
+      const [a, b] = e.touches;
+      const distance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+      if (this.pinchDistance) this.zoomBy(this.pinchDistance / distance);
+      this.pinchDistance = distance;
+    }, { passive: true });
+    canvas.addEventListener('touchend', () => { this.pinchDistance = null; });
+  }
+}
+
+
+/* ---- src/main.js ---- */
+/* Procedural Arena - WebGL2 renderer, no libraries and no imported models.
+
+   Startup:    build the arena from primitives (arena.js) -> one vertex buffer
+   Per frame:  1. shadow pass   (depth from the sun, 4096² map)
+               2. sky           (full-screen triangle)
+               3. scene         (one draw call)                                                               */
+
+(function main() {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const params = new URLSearchParams(location.search);
+  const captureMode = params.has('shot');            // headless screenshots: render on demand, smaller shadow map
+
+  const canvas = $('canvas');
+  const gl = canvas.getContext('webgl2', {
+    antialias: true,
+    alpha: false,
+    powerPreference: 'high-performance',
+    preserveDrawingBuffer: captureMode,
+  });
+  if (!gl) {
+    document.body.innerHTML = '<p style="padding:24px">WebGL2 is not available in this browser.</p>';
+    return;
+  }
+
+  /* ───────────── GL helpers ───────────── */
+
+  function compileShader(type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+    return shader;
+  }
+
+  /** Links a program and collects its uniform locations by name. Attributes: 0 pos, 1 normal, 2 colour, 3 material. */
+  function createProgram(vertexSource, fragmentSource) {
+    const program = gl.createProgram();
+    gl.attachShader(program, compileShader(gl.VERTEX_SHADER, vertexSource));
+    gl.attachShader(program, compileShader(gl.FRAGMENT_SHADER, fragmentSource));
+    ['aPos', 'aNrm', 'aCol', 'aMat'].forEach((name, index) => gl.bindAttribLocation(program, index, name));
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+
+    const uniforms = {};
+    const count = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
+    for (let i = 0; i < count; i++) {
+      const { name } = gl.getActiveUniform(program, i);
+      uniforms[name] = gl.getUniformLocation(program, name);
+    }
+    return { program, uniforms };
+  }
+
+  /** Sets float / vec3 / vec4 / mat4 uniforms from a plain object, picking the call by value shape. */
+  function setUniforms(uniforms, values) {
+    for (const [name, v] of Object.entries(values)) {
+      const location = uniforms[name];
+      if (typeof v === 'number') gl.uniform1f(location, v);
+      else if (v.length === 3) gl.uniform3fv(location, v);
+      else if (v.length === 4) gl.uniform4fv(location, v);
+      else if (v.length === 16) gl.uniformMatrix4fv(location, false, v);
+    }
+  }
+
+  function createShadowTarget(size) {
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.DEPTH_COMPONENT32F, size, size);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL);
+
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, texture, 0);
+    gl.drawBuffers([gl.NONE]);
+    gl.readBuffer(gl.NONE);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { texture, framebuffer, size };
+  }
+
+  /* ───────────── build the arena and upload it ───────────── */
+
+  const builder = new MeshBuilder();
+  buildArena(builder);
+  const mesh = builder.build();
+  const indexCount = mesh.indices.length;
+
+  const FLOAT = 4, STRIDE = 11 * FLOAT;               // pos(3) normal(3) colour(3) kind(1) shine(1)
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, mesh.vertices, gl.STATIC_DRAW);
+  [[0, 3, 0], [1, 3, 3], [2, 3, 6], [3, 2, 9]].forEach(([location, size, offset]) => {
+    gl.enableVertexAttribArray(location);
+    gl.vertexAttribPointer(location, size, gl.FLOAT, false, STRIDE, offset * FLOAT);
+  });
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  console.log(`arena: ${mesh.vertices.length / 11} vertices, ${indexCount / 3} triangles`);
+
+  const drawArena = () => gl.drawElements(gl.TRIANGLES, indexCount, gl.UNSIGNED_INT, 0);
+
+  /* ───────────── programs and render targets ───────────── */
+
+  const scenePass = createProgram(SHADERS.sceneVS, SHADERS.sceneFS);
+  const shadowPass = createProgram(SHADERS.shadowVS, SHADERS.shadowFS);
+  const skyPass = createProgram(SHADERS.skyVS, SHADERS.skyFS);
+  const shadow = createShadowTarget(captureMode ? 2048 : 4096);
+
+  /* ───────────── interaction ───────────── */
+
+  const camera = new OrbitCamera(canvas);
+  const lighting = LIGHTING; // Static lighting state
+
+  const viewButtons = document.querySelectorAll('#bar [data-view]');
+  viewButtons.forEach((button) => {
+    button.onclick = () => {
+      viewButtons.forEach((b) => b.classList.toggle('on', b === button));
+      camera.flyTo(button.dataset.view);
+    };
+  });
+
+  $('btn-spin').onclick = (e) => {
+    camera.autoRotate = !camera.autoRotate;
+    e.target.classList.toggle('on', camera.autoRotate);
+  };
+
+  const KEY_VIEWS = { 1: 'iso', 2: 'battle', 3: 'top', 4: 'low' };
+  addEventListener('keydown', (e) => { if (KEY_VIEWS[e.key]) camera.flyTo(KEY_VIEWS[e.key]); });
+
+  /* ───────────── frame ───────────── */
+
+  const startTime = performance.now();
+  let lastTime = startTime;
+  let fpsSeconds = 0, fpsFrames = 0;
+
+  function updateFpsCounter(dt) {
+    fpsSeconds += dt;
+    fpsFrames++;
+    if (fpsSeconds > 0.5) {
+      $('fps').textContent = `${Math.round(fpsFrames / fpsSeconds)} fps`;
+      fpsSeconds = fpsFrames = 0;
+    }
+  }
+
+  function resizeCanvas() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const width = Math.floor(canvas.clientWidth * dpr), height = Math.floor(canvas.clientHeight * dpr);
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+    return { width, height };
+  }
+
+  function renderShadowMap(lightViewProj) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, shadow.framebuffer);
+    gl.viewport(0, 0, shadow.size, shadow.size);
+    gl.clear(gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST);
+    gl.disable(gl.CULL_FACE);
+    gl.enable(gl.POLYGON_OFFSET_FILL);
+    gl.polygonOffset(2.5, 4);
+    gl.colorMask(false, false, false, false);
+
+    gl.useProgram(shadowPass.program);
+    setUniforms(shadowPass.uniforms, { uLightViewProj: lightViewProj });
+    gl.bindVertexArray(vao);
+    drawArena();
+
+    gl.colorMask(true, true, true, true);
+    gl.disable(gl.POLYGON_OFFSET_FILL);
+  }
+
+  function renderSky(viewProj, eye, time) {
+    gl.disable(gl.DEPTH_TEST);
+    gl.useProgram(skyPass.program);
+    gl.bindVertexArray(null);
+    setUniforms(skyPass.uniforms, {
+      uInvViewProj: Mat4.invert(viewProj),
+      uCamera: eye,
+      uSunDir: lighting.sunDir,
+      uSunColor: scaleVec(lighting.sunColor, 0.5),
+      uZenith: toLinear(lighting.zenith),
+      uHorizon: toLinear(lighting.horizon),
+      uTime: time,
+    });
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.enable(gl.DEPTH_TEST);
+  }
+
+  function renderScene(viewProj, lightViewProj, eye) {
+    gl.useProgram(scenePass.program);
+    gl.bindVertexArray(vao);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, shadow.texture);
+    gl.uniform1i(scenePass.uniforms.uShadowMap, 0);
+
+    setUniforms(scenePass.uniforms, {
+      uViewProj: viewProj,
+      uLightViewProj: lightViewProj,
+      uCamera: eye,
+      uSunDir: lighting.sunDir,
+      uSunColor: lighting.sunColor,
+      uSkyAmbient: scaleVec(toLinear(lighting.skyAmbient), 1.45),
+      uGroundAmbient: scaleVec(toLinear(lighting.groundAmbient), 1.25),
+      uFogColor: toLinear(lighting.fogColor),
+      uFogDensity: lighting.fogDensity,
+      uShadowTexel: 1 / shadow.size,
+    });
+    drawArena();
+  }
+
+  function frame(now) {
+    const dt = Math.min(0.05, (now - lastTime) / 1000);
+    lastTime = now;
+    updateFpsCounter(dt);
+
+    camera.update(dt);
+
+    const { width, height } = resizeCanvas();
+    const eye = camera.eye;
+    const viewProj = Mat4.multiply(
+      Mat4.perspective(0.62, width / height, 1, 600),
+      Mat4.lookAt(eye, camera.target, [0, 1, 0]),
+    );
+    const lightViewProj = sunViewProjection(lighting.sunDir);
+
+    renderShadowMap(lightViewProj);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, width, height);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    renderSky(viewProj, eye, (now - startTime) / 1000);
+    renderScene(viewProj, lightViewProj, eye);
+
+    if (!captureMode) requestAnimationFrame(frame);
+  }
+
+  /* ───────────── start ───────────── */
+
+  if (!captureMode) {
+    camera.flyTo('iso');                                                // opening glide from far away
+    requestAnimationFrame(frame);
+  }
+
+  // Hooks for the headless screenshot script (tools/screenshot.py).
+  window.arenaTest = {
+    ready: true,
+    setCamera: (pose) => camera.setPose(pose),
+    render: (frames = 1) => { for (let i = 0; i < frames; i++) frame(performance.now() + i * 40); },
+  };
+})();
+
+</script>
+</body>
+</html>
