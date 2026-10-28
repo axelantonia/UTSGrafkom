@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <title>Clash Royale - UTS Grafika Komputer</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #14589c;
+        font-family: system-ui, sans-serif;
+        user-select: none;
+      }
+      canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      #ui {
+        position: fixed;
+        left: 14px;
+        top: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        z-index: 10;
+        max-width: calc(100vw - 28px);
+      }
+      .bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+      }
+      .label {
+        color: #cbd5e1;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        background: rgba(10, 18, 30, 0.75);
+        padding: 5px 8px;
+        border-radius: 5px;
+      }
+      button {
+        background: rgba(18, 28, 45, 0.84);
+        color: #eef3ff;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        padding: 6px 11px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 600;
+        backdrop-filter: blur(4px);
+        transition: 0.15s;
+      }
+      button:hover {
+        background: rgba(45, 85, 150, 0.95);
+      }
+      button.active {
+        background: #eab308;
+        color: #111;
+        border-color: #fde047;
+      }
+      #hud {
+        position: fixed;
+        right: 14px;
+        bottom: 12px;
+        color: #f8fafc;
+        font-size: 12px;
+        background: rgba(12, 20, 35, 0.82);
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        padding: 8px 12px;
+        border-radius: 8px;
+        backdrop-filter: blur(4px);
+        text-align: right;
+        line-height: 1.45;
+      }
+      #hud b {
+        color: #fde047;
+      }
+      #hint {
+        position: fixed;
+        left: 14px;
+        bottom: 12px;
+        color: rgba(255, 255, 255, 0.85);
+        font-size: 12px;
+        background: rgba(0, 0, 0, 0.38);
+        padding: 6px 10px;
+        border-radius: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="ui">
+      <div class="bar">
+        <span class="label">Kamera 6 Sisi:</span>
+        <button onclick="setCam(0, 0.12, 10.2)">Depan</button>
+        <button onclick="setCam(Math.PI, 0.12, 10.2)">Belakang</button>
+        <button onclick="setCam(Math.PI / 2, 0.08, 10.2)">Samping Kanan</button>
+        <button onclick="setCam(-Math.PI / 2, 0.08, 10.2)">Samping Kiri</button>
+        <button onclick="setCam(0, 1.48, 10.5)">Atas</button>
+        <button onclick="setCam(0, -1.48, 9.5)">Bawah</button>
+      </div>
+      <div class="bar">
+        <span class="label">Animasi Storyline:</span>
+        <button id="btn_0" class="active" onclick="setAnimMode(0)">⏹ Pose Statis (OFF)</button>
+        <button id="btn_1" onclick="setAnimMode(1)">🎬 Play Full Storyline</button>
+        <button id="btn_2" onclick="setAnimMode(2)">Scene 2: Heavy Jump & Landing</button>
+        <button id="btn_3" onclick="setAnimMode(3)">Scene 3: Combat Guard & Pulse</button>
+        <button id="btn_4" onclick="setAnimMode(4)">Scene 4: Combo Smash Kanan-Kiri</button>
+        <button id="btn_5" onclick="setAnimMode(5)">Scene 5: The Blast (Cross-Guard)</button>
+        <button id="btn_6" onclick="setAnimMode(6)">Scene 6: Impact Shockwave</button>
+        <button id="btn_7" onclick="setAnimMode(7)">Scene 7: Aftermath Victory</button>
+      </div>
+    </div>
+
+    <div id="hint">Drag Kiri = Orbit Kamera | Scroll = Zoom</div>
+    <div id="hud">
+      <div>Status: <b id="hudScene">Pose Statis (Model Terkunci)</b></div>
+      <div>Rubrik Aktif: <span id="hudRubric">4 Quadrics + Box + 3D Bézier Curve</span></div>
+    </div>
+
+    <canvas id="c"></canvas>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
