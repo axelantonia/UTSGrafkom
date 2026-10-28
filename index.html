@@ -1,129 +1,91 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="id">
-  <head>
-    <meta charset="utf-8" />
-    <title>Clash Royale - UTS Grafika Komputer</title>
-    <style>
-      html,
-      body {
-        margin: 0;
-        height: 100%;
-        overflow: hidden;
-        background: #14589c;
-        font-family: system-ui, sans-serif;
-        user-select: none;
-      }
-      canvas {
-        width: 100%;
-        height: 100%;
-        display: block;
-      }
-      #ui {
-        position: fixed;
-        left: 14px;
-        top: 12px;
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-        z-index: 10;
-        max-width: calc(100vw - 28px);
-      }
-      .bar {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-        align-items: center;
-      }
-      .label {
-        color: #cbd5e1;
-        font-size: 11px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        background: rgba(10, 18, 30, 0.75);
-        padding: 5px 8px;
-        border-radius: 5px;
-      }
-      button {
-        background: rgba(18, 28, 45, 0.84);
-        color: #eef3ff;
-        border: 1px solid rgba(255, 255, 255, 0.2);
-        padding: 6px 11px;
-        border-radius: 6px;
-        cursor: pointer;
-        font-size: 12px;
-        font-weight: 600;
-        backdrop-filter: blur(4px);
-        transition: 0.15s;
-      }
-      button:hover {
-        background: rgba(45, 85, 150, 0.95);
-      }
-      button.active {
-        background: #eab308;
-        color: #111;
-        border-color: #fde047;
-      }
-      #hud {
-        position: fixed;
-        right: 14px;
-        bottom: 12px;
-        color: #f8fafc;
-        font-size: 12px;
-        background: rgba(12, 20, 35, 0.82);
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        padding: 8px 12px;
-        border-radius: 8px;
-        backdrop-filter: blur(4px);
-        text-align: right;
-        line-height: 1.45;
-      }
-      #hud b {
-        color: #fde047;
-      }
-      #hint {
-        position: fixed;
-        left: 14px;
-        bottom: 12px;
-        color: rgba(255, 255, 255, 0.85);
-        font-size: 12px;
-        background: rgba(0, 0, 0, 0.38);
-        padding: 6px 10px;
-        border-radius: 6px;
-      }
-    </style>
-  </head>
-  <body>
-    <div id="ui">
-      <div class="bar">
-        <span class="label">Kamera 6 Sisi:</span>
-        <button onclick="setCam(0, 0.12, 10.2)">Depan</button>
-        <button onclick="setCam(Math.PI, 0.12, 10.2)">Belakang</button>
-        <button onclick="setCam(Math.PI / 2, 0.08, 10.2)">Samping Kanan</button>
-        <button onclick="setCam(-Math.PI / 2, 0.08, 10.2)">Samping Kiri</button>
-        <button onclick="setCam(0, 1.48, 10.5)">Atas</button>
-        <button onclick="setCam(0, -1.48, 9.5)">Bawah</button>
-      </div>
-      <div class="bar">
-        <span class="label">Animasi Storyline:</span>
-        <button id="btn_0" class="active" onclick="setAnimMode(0)">⏹ Pose Statis (OFF)</button>
-        <button id="btn_1" onclick="setAnimMode(1)">🎬 Play Full Storyline</button>
-        <button id="btn_2" onclick="setAnimMode(2)">Scene 2: Heavy Jump & Landing</button>
-        <button id="btn_3" onclick="setAnimMode(3)">Scene 3: Combat Guard & Pulse</button>
-        <button id="btn_4" onclick="setAnimMode(4)">Scene 4: Combo Smash Kanan-Kiri</button>
-        <button id="btn_5" onclick="setAnimMode(5)">Scene 5: The Blast (Cross-Guard)</button>
-        <button id="btn_6" onclick="setAnimMode(6)">Scene 6: Impact Shockwave</button>
-        <button id="btn_7" onclick="setAnimMode(7)">Scene 7: Aftermath Victory</button>
-      </div>
-    </div>
+<head>
+<meta charset="utf-8">
+<title>Clash Royale - Proyek UTS Grafika Komputer</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0f172a; font-family: system-ui, -apple-system, sans-serif; user-select: none; }
+  canvas { width: 100%; height: 100%; display: block; cursor: grab; }
+  canvas:active { cursor: grabbing; }
+  #ui { position: fixed; left: 12px; top: 10px; display: flex; flex-direction: column; gap: 6px; z-index: 20; max-width: calc(100vw - 24px); }
+  .bar { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+  .label { color: #cbd5e1; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; background: rgba(10, 18, 30, 0.82); padding: 5px 8px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.12); }
+  button { background: rgba(18, 28, 45, 0.86); color: #eef3ff; border: 1px solid rgba(255,255,255,0.2); padding: 5px 10px; border-radius: 6px; cursor: pointer; font-size: 11.5px; font-weight: 600; backdrop-filter: blur(6px); transition: 0.15s; }
+  button:hover { background: rgba(45, 85, 150, 0.95); }
+  button.active { background: #eab308; color: #111; border-color: #fde047; }
+  #timelineBar { position: fixed; left: 14px; right: 14px; bottom: 52px; display: flex; align-items: center; gap: 10px; background: rgba(12, 20, 35, 0.85); border: 1px solid rgba(255,255,255,0.18); padding: 7px 14px; border-radius: 10px; backdrop-filter: blur(6px); z-index: 20; color: #f8fafc; font-size: 12px; font-weight: 600; }
+  #tlSlider { flex: 1; accent-color: #eab308; cursor: pointer; }
+  #hud { position: fixed; right: 14px; bottom: 10px; color: #f8fafc; font-size: 12px; background: rgba(12, 20, 35, 0.85); border: 1px solid rgba(255,255,255,0.18); padding: 6px 12px; border-radius: 8px; backdrop-filter: blur(4px); text-align: right; z-index: 20; }
+  #hud b { color: #fde047; }
+  #hint { position: fixed; left: 14px; bottom: 10px; color: rgba(255,255,255,0.88); font-size: 12px; background: rgba(12,20,35,0.75); padding: 6px 10px; border-radius: 6px; z-index: 20; }
+  #flashOverlay { position: fixed; inset: 0; background: #ffffff; pointer-events: none; opacity: 0; z-index: 15; transition: opacity 0.05s linear; }
+  #creditsOverlay { position: fixed; inset: 0; background: radial-gradient(circle, #0f172a 0%, #020617 100%); color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; opacity: 0; z-index: 16; text-align: center; }
+  #creditsOverlay h1 { font-size: 42px; margin: 0 0 8px 0; color: #fde047; letter-spacing: 2px; text-shadow: 0 4px 20px rgba(234,179,8,0.5); }
+  #creditsOverlay h2 { font-size: 18px; margin: 0 0 28px 0; color: #94a3b8; font-weight: 500; letter-spacing: 1px; }
+  .member-grid { display: flex; gap: 28px; margin-top: 10px; }
+  .member-card { background: rgba(30, 41, 59, 0.7); border: 1px solid rgba(255,255,255,0.15); padding: 16px 24px; border-radius: 12px; min-width: 190px; }
+  .member-card b { display: block; font-size: 16px; color: #f8fafc; margin-bottom: 4px; }
+  .member-card span { font-size: 13px; color: #eab308; }
+</style>
+</head>
+<body>
+<div id="ui">
+  <div class="bar">
+    <span class="label">Fokus Inspeksi & Kamera:</span>
+    <button id="btn_cine" class="active" onclick="toggleCineCam()">🎥 Kamera Sinematik: ON</button>
+    <button onclick="focusChar('arena')">🏟️ Arena Utuh</button>
+    <button onclick="focusChar('mk')">🛡️ Fokus Mega Knight</button>
+    <button onclick="focusChar('pekka')">⚔️ Fokus P.E.K.K.A</button>
+    <button onclick="focusChar('sparky')">⚡ Fokus Sparky</button>
+    <button onclick="resetStatic()">⏹ Pose Statis</button>
+  </div>
+  <div class="bar">
+    <span class="label">8 Scene Storyline (90s):</span>
+    <button id="btn_all" class="sbtn active" onclick="playRange(0, 90, 'btn_all')">🎬 Play Full Trailer (0–90s)</button>
+    <button id="btn_s1" class="sbtn" onclick="playRange(0, 12, 'btn_s1')">S1: Arena & Spawn</button>
+    <button id="btn_s2" class="sbtn" onclick="playRange(12, 25, 'btn_s2')">S2: Challengers</button>
+    <button id="btn_s3" class="sbtn" onclick="playRange(25, 40, 'btn_s3')">S3: Power Up</button>
+    <button id="btn_s4" class="sbtn" onclick="playRange(40, 52, 'btn_s4')">S4: Diagonal Strike</button>
+    <button id="btn_s5" class="sbtn" onclick="playRange(52, 62, 'btn_s5')">S5: Blast & Slash</button>
+    <button id="btn_s6" class="sbtn" onclick="playRange(62, 72, 'btn_s6')">S6: Impact Explosion</button>
+    <button id="btn_s7" class="sbtn" onclick="playRange(72, 82, 'btn_s7')">S7: Aftermath</button>
+    <button id="btn_s8" class="sbtn" onclick="playRange(82, 90, 'btn_s8')">S8: Credits</button>
+  </div>
+</div>
 
-    <div id="hint">Drag Kiri = Orbit Kamera | Scroll = Zoom</div>
-    <div id="hud">
-      <div>Status: <b id="hudScene">Pose Statis (Model Terkunci)</b></div>
-      <div>Rubrik Aktif: <span id="hudRubric">4 Quadrics + Box + 3D Bézier Curve</span></div>
-    </div>
+<div id="timelineBar">
+  <button onclick="togglePlay()">⏯ Play / Pause</button>
+  <input id="tlSlider" type="range" min="0" max="90" step="0.05" value="0" oninput="scrubTimeline(this.value)">
+  <span id="tlTime">0.0s / 90.0s</span>
+</div>
 
-    <canvas id="c"></canvas>
-    <script type="module" src="./main.js"></script>
-  </body>
+<div id="hint">Drag Kiri = Orbit Kamera Manual | Scroll = Zoom</div>
+<div id="hud">
+  <div>Adegan: <b id="hudScene">Scene 1</b></div>
+  <div>Transformasi Aktif: <span id="hudRubric">Translate + Rotate + Scaling + Hierarchy</span></div>
+</div>
+
+<div id="flashOverlay"></div>
+<div id="creditsOverlay">
+  <h1>CLASH ROYALE</h1>
+  <h2>PROYEK UTS GRAFIKA KOMPUTER — PURE WEBGL</h2>
+  <div class="member-grid">
+    <div class="member-card">
+      <b>Allan Jeremy Bendatu</b>
+      <span>Mega Knight</span>
+    </div>
+    <div class="member-card">
+      <b>Valent</b>
+      <span>P.E.K.K.A & Arena</span>
+    </div>
+    <div class="member-card">
+      <b>Axel Antonia</b>
+      <span>Sparky</span>
+    </div>
+  </div>
+</div>
+
+<canvas id="c"></canvas>
+<script type="module" src="./main.js"></script>
+</body>
 </html>
